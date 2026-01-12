@@ -11,7 +11,11 @@
       "subscriptions": [],
       "endpoints": ["http", "typePRODUCTION"],
       "endpointSecurity": [],
-      "tryout": []
+      "tryout": [],
+      "applicationDiscovery": {
+        "supported": true,
+        "capabilities": ["list", "search", "import", "pagination"]
+      }
     }
   }
 }

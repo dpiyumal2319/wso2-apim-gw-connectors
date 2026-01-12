@@ -91,4 +91,32 @@ public class AzureConstants {
     public static final String AZURE_ENVIRONMENT_RESOURCE_GROUP = "resource_group";
     public static final String AZURE_ENVIRONMENT_SERVICE_NAME = "service_name";
     public static final String AZURE_ENVIRONMENT_HOSTNAME = "host_name";
+
+    // Application (Subscription) external reference fields
+    public static final String AZURE_APP_EXTERNAL_REF_SUBSCRIPTION_ID = "subscriptionId";
+    public static final String AZURE_APP_EXTERNAL_REF_DISPLAY_NAME = "displayName";
+    public static final String AZURE_APP_EXTERNAL_REF_STATE = "state";
+    public static final String AZURE_APP_EXTERNAL_REF_SCOPE = "scope";
+    public static final String AZURE_APP_EXTERNAL_REF_PRODUCT_ID = "productId";
+    public static final String AZURE_APP_EXTERNAL_REF_PRODUCT_NAME = "productName";
+    public static final String AZURE_APP_EXTERNAL_REF_CREATED_DATE = "createdDate";
+    public static final String AZURE_APP_EXTERNAL_REF_MODIFIED_DATE = "modifiedDate";
+    public static final String AZURE_APP_EXTERNAL_REF_PRIMARY_KEY_REF = "primaryKeyRef";
+    public static final String AZURE_APP_EXTERNAL_REF_SECONDARY_KEY_REF = "secondaryKeyRef";
+    public static final String AZURE_APP_EXTERNAL_REF_TIER_MAPPING = "tierMapping";
+    public static final String AZURE_APP_EXTERNAL_REF_OWNER_EMAIL = "ownerEmail";
+
+    // Subscription states
+    public static final String AZURE_SUBSCRIPTION_STATE_ACTIVE = "active";
+    public static final String AZURE_SUBSCRIPTION_STATE_SUSPENDED = "suspended";
+    public static final String AZURE_SUBSCRIPTION_STATE_CANCELLED = "cancelled";
+    public static final String AZURE_SUBSCRIPTION_STATE_SUBMITTED = "submitted";
+    public static final String AZURE_SUBSCRIPTION_STATE_REJECTED = "rejected";
+
+    // Key types
+    public static final String AZURE_KEY_TYPE_PRIMARY = "PRIMARY";
+    public static final String AZURE_KEY_TYPE_SECONDARY = "SECONDARY";
+
+    // Default tier mapping
+    public static final String AZURE_DEFAULT_TIER = "Unlimited";
 }

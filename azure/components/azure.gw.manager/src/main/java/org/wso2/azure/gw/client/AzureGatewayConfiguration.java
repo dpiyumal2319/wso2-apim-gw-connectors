@@ -47,7 +47,7 @@ import java.util.List;
         service = GatewayAgentConfiguration.class
 )
 public class AzureGatewayConfiguration implements GatewayAgentConfiguration {
-    private static final Log log = LogFactory.getLog(AzureGatewayConfiguration.class);
+    private static final Log LOG = LogFactory.getLog(AzureGatewayConfiguration.class);
 
     /**
      * Returns the Deployer classname.
@@ -68,6 +68,16 @@ public class AzureGatewayConfiguration implements GatewayAgentConfiguration {
     @Override
     public String getDiscoveryImplementation() {
         return AzureFederatedAPIDiscovery.class.getName();
+    }
+
+    /**
+     * Returns the Application Discovery implementation class name.
+     *
+     * @return The fully qualified class name of the application discovery implementation.
+     */
+    @Override
+    public String getApplicationDiscoveryImplementation() {
+        return AzureFederatedApplicationDiscovery.class.getName();
     }
 
     /**
@@ -131,7 +141,8 @@ public class AzureGatewayConfiguration implements GatewayAgentConfiguration {
             JsonObject gatewayObject = jsonObject.getAsJsonObject(AzureConstants.AZURE_TYPE);
 
             List<String> apiTypes = gson.fromJson(gatewayObject.get("apiTypes"),
-                    new TypeToken<List<String>>() { }.getType());
+                    new TypeToken<List<String>>() {
+                    }.getType());
             JsonObject gatewayFeatures = gatewayObject.get("gatewayFeatures").getAsJsonObject();
 
             GatewayPortalConfiguration config = new GatewayPortalConfiguration();

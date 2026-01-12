@@ -37,3 +37,6 @@ arm64/
 build/
 
 target
+
+
+.project
