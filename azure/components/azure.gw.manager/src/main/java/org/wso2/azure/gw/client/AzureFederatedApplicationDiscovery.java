@@ -29,7 +29,6 @@ import com.azure.core.util.Context;
 import com.azure.identity.ClientSecretCredentialBuilder;
 import com.azure.resourcemanager.apimanagement.ApiManagementManager;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionContract;
-import lombok.Getter;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.azure.gw.client.datastore.AzureProductDataStore;
@@ -44,9 +43,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * This class provides the implementation for the discovery of Applications (Subscriptions)
+ * This class provides the implementation for the discovery of Applications
+ * (Subscriptions)
  * from the Azure API Management Gateway.
- *
+ * <p>
  * Azure APIM uses "Subscriptions" as the equivalent of WSO2 Applications.
  */
 public class AzureFederatedApplicationDiscovery implements FederatedApplicationDiscovery {
@@ -56,8 +56,8 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
     private String resourceGroup;
     private String serviceName;
     private ApiManagementManager manager;
+    private HttpClient httpClient;
 
-    @Getter
     private AzureProductDataStore productDataStore;
 
     @Override
@@ -73,7 +73,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
             String subscriptionId = environment.getAdditionalProperties()
                     .get(AzureConstants.AZURE_ENVIRONMENT_SUBSCRIPTION_ID);
 
-            HttpClient httpClient = new NettyAsyncHttpClientBuilder().build();
+            httpClient = new NettyAsyncHttpClientBuilder().build();
 
             TokenCredential cred = new ClientSecretCredentialBuilder()
                     .httpClient(httpClient)
@@ -136,24 +136,29 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
                     resourceGroup,
                     serviceName,
                     filter,
-                    limit,  // top
+                    limit, // top
                     offset, // skip
-                    Context.NONE
-            );
+                    Context.NONE);
 
             // Ensure product data store is initialized for tier mapping
             productDataStore.initialize();
 
-            for (SubscriptionContract subscription : subscriptions) {
-                try {
-                    DiscoveredApplication discoveredApp = AzureApplicationUtil.subscriptionToDiscoveredApplication(
-                            subscription, manager, resourceGroup, serviceName, productDataStore);
-                    discoveredApplications.add(discoveredApp);
-                } catch (Exception e) {
-                    log.error("Error converting Azure subscription to DiscoveredApplication: "
-                            + subscription.name(), e);
+            subscriptions.streamByPage().forEach(resp -> {
+                if (log.isDebugEnabled()) {
+                    log.debug(String.format("Response headers are %s. Url %s  and status code %d", resp.getHeaders(),
+                            resp.getRequest().getUrl(), resp.getStatusCode()));
                 }
-            }
+                resp.getElements().forEach(subscription -> {
+                    try {
+                        DiscoveredApplication discoveredApp = AzureApplicationUtil.subscriptionToDiscoveredApplication(
+                                subscription, manager, resourceGroup, serviceName, productDataStore);
+                        discoveredApplications.add(discoveredApp);
+                    } catch (Exception e) {
+                        log.error("Error converting Azure subscription to DiscoveredApplication: "
+                                + subscription.name(), e);
+                    }
+                });
+            });
 
             if (log.isDebugEnabled()) {
                 log.debug("Discovered " + discoveredApplications.size() + " Azure subscriptions");
@@ -190,7 +195,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
 
     // TODO: Implement efficient method to reuse count logic
     // TODO: Optimize count query if Azure API supports it in future,
-    //  if not implement caching using inbuilt in-mem key value store
+    // if not implement caching using inbuilt in-mem key value store
     @Override
     public int getTotalApplicationCount(String query) throws APIManagementException {
         try {
@@ -199,10 +204,9 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
                     resourceGroup,
                     serviceName,
                     filter,
-                    null,  // top: null to get all items
-                    null,  // skip: null to start from beginning
-                    Context.NONE
-            );
+                    null, // top: null to get all items
+                    null, // skip: null to start from beginning
+                    Context.NONE);
 
             // Count by iterating through pages
             // Azure API Management SDK does not provide a direct count API,
@@ -276,5 +280,3 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
     }
 
 }
-
-

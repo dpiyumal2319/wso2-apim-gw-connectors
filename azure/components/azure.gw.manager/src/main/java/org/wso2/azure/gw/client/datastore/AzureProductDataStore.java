@@ -54,7 +54,7 @@ public class AzureProductDataStore {
 
     /**
      * -- GETTER --
-     *  Checks if the cache has been initialized.
+     * Checks if the cache has been initialized.
      *
      * @return true if the cache is initialized, false otherwise.
      */
@@ -88,43 +88,48 @@ public class AzureProductDataStore {
                     null, // skip
                     null, // expandGroups
                     null, // tags
-                    Context.NONE
-            );
+                    Context.NONE);
 
-            for (ProductContract product : products) {
-                String productId = product.name();
-                productNameCache.put(productId, product.displayName());
+            products.streamByPage().forEach(resp -> {
+                if (log.isDebugEnabled()) {
+                    log.debug(String.format("Fetched product page. Headers: %s. Status: %d",
+                            resp.getHeaders(), resp.getStatusCode()));
+                }
+                resp.getElements().forEach(product -> {
+                    String productId = product.name();
+                    productNameCache.put(productId, product.displayName());
 
-                // Try to fetch product policy
-                try {
-                    PolicyContract policy = manager.productPolicies().get(
-                            resourceGroup, serviceName, productId, PolicyIdName.POLICY
-                    );
+                    // Try to fetch product policy
+                    try {
+                        PolicyContract policy = manager.productPolicies().get(
+                                resourceGroup, serviceName, productId, PolicyIdName.POLICY);
 
-                    if (policy != null && policy.value() != null) {
-                        Map<String, Integer> rateLimitInfo = AzurePolicyParser.parseRateLimitFromPolicy(policy.value());
+                        if (policy != null && policy.value() != null) {
+                            Map<String, Integer> rateLimitInfo = AzurePolicyParser
+                                    .parseRateLimitFromPolicy(policy.value());
 
-                        if (!rateLimitInfo.isEmpty()) {
-                            productRateLimitCache.put(productId, rateLimitInfo);
+                            if (!rateLimitInfo.isEmpty()) {
+                                productRateLimitCache.put(productId, rateLimitInfo);
 
-                            int calls = rateLimitInfo.getOrDefault("calls", 0);
-                            int renewalPeriod = rateLimitInfo.getOrDefault("renewal-period", 60);
-                            String tier = AzurePolicyParser.mapToWSO2Tier(calls, renewalPeriod);
-                            productTierCache.put(productId, tier);
+                                int calls = rateLimitInfo.getOrDefault("calls", 0);
+                                int renewalPeriod = rateLimitInfo.getOrDefault("renewal-period", 60);
+                                String tier = AzurePolicyParser.mapToWSO2Tier(calls, renewalPeriod);
+                                productTierCache.put(productId, tier);
+                            } else {
+                                productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
+                            }
                         } else {
                             productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
                         }
-                    } else {
+                    } catch (Exception e) {
+                        // Product might not have a policy defined
+                        if (log.isDebugEnabled()) {
+                            log.debug("No policy found for product: " + productId);
+                        }
                         productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
                     }
-                } catch (Exception e) {
-                    // Product might not have a policy defined
-                    if (log.isDebugEnabled()) {
-                        log.debug("No policy found for product: " + productId);
-                    }
-                    productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
-                }
-            }
+                });
+            });
 
             initialized = true;
             if (log.isDebugEnabled()) {
@@ -166,7 +171,8 @@ public class AzureProductDataStore {
      * Gets the rate limit information for a given Azure product ID.
      *
      * @param productId The Azure product ID.
-     * @return A map containing 'calls' and 'renewal-period', or empty map if not found.
+     * @return A map containing 'calls' and 'renewal-period', or empty map if not
+     *         found.
      */
     public Map<String, Integer> getRateLimitInfo(String productId) {
         if (!initialized) {
@@ -186,4 +192,3 @@ public class AzureProductDataStore {
     }
 
 }
-
