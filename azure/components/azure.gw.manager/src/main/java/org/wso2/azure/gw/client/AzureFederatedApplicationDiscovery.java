@@ -22,7 +22,6 @@ import com.azure.core.credential.TokenCredential;
 import com.azure.core.http.HttpClient;
 import com.azure.core.http.netty.NettyAsyncHttpClientBuilder;
 import com.azure.core.http.rest.PagedIterable;
-import com.azure.core.http.rest.PagedResponse;
 import com.azure.core.management.AzureEnvironment;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.core.util.Context;
@@ -41,6 +40,9 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
 
 /**
  * This class provides the implementation for the discovery of Applications
@@ -56,7 +58,6 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
     private String resourceGroup;
     private String serviceName;
     private ApiManagementManager manager;
-    private HttpClient httpClient;
 
     private AzureProductDataStore productDataStore;
 
@@ -73,7 +74,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
             String subscriptionId = environment.getAdditionalProperties()
                     .get(AzureConstants.AZURE_ENVIRONMENT_SUBSCRIPTION_ID);
 
-            httpClient = new NettyAsyncHttpClientBuilder().build();
+            HttpClient httpClient = new NettyAsyncHttpClientBuilder().build();
 
             TokenCredential cred = new ClientSecretCredentialBuilder()
                     .httpClient(httpClient)
@@ -107,17 +108,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
     }
 
     @Override
-    public List<DiscoveredApplication> discoverApplications() throws APIManagementException {
-        return discoverApplications(0, 100);
-    }
-
-    @Override
-    public List<DiscoveredApplication> discoverApplications(int offset, int limit) throws APIManagementException {
-        return discoverApplications(offset, limit, null);
-    }
-
-    @Override
-    public List<DiscoveredApplication> discoverApplications(int offset, int limit, String query)
+    public DiscoveredApplicationResult discoverApplications(int offset, int limit, String query)
             throws APIManagementException {
 
         if (log.isDebugEnabled()) {
@@ -126,6 +117,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
         }
 
         List<DiscoveredApplication> discoveredApplications = new ArrayList<>();
+        AtomicBoolean hasNext = new AtomicBoolean(false);
 
         try {
             // Build filter for Azure API
@@ -136,29 +128,45 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
                     resourceGroup,
                     serviceName,
                     filter,
-                    limit, // top
+                    limit, // limit in page size
                     offset, // skip
                     Context.NONE);
 
             // Ensure product data store is initialized for tier mapping
             productDataStore.initialize();
 
-            subscriptions.streamByPage().forEach(resp -> {
+            // Collect all subscriptions for processing
+            List<SubscriptionContract> subscriptionList = new ArrayList<>();
+            // Fetch ONLY one page
+            subscriptions.streamByPage().limit(1).forEach(resp -> {
                 if (log.isDebugEnabled()) {
                     log.debug(String.format("Response headers are %s. Url %s  and status code %d", resp.getHeaders(),
                             resp.getRequest().getUrl(), resp.getStatusCode()));
                 }
-                resp.getElements().forEach(subscription -> {
-                    try {
-                        DiscoveredApplication discoveredApp = AzureApplicationUtil.subscriptionToDiscoveredApplication(
-                                subscription, manager, resourceGroup, serviceName, productDataStore);
-                        discoveredApplications.add(discoveredApp);
-                    } catch (Exception e) {
-                        log.error("Error converting Azure subscription to DiscoveredApplication: "
-                                + subscription.name(), e);
-                    }
-                });
+                // Check continuation token to determine if more pages exist
+                if (resp.getContinuationToken() != null && !resp.getContinuationToken().isEmpty()) {
+                    hasNext.set(true);
+                }
+                resp.getElements().forEach(subscriptionList::add);
             });
+
+            if (log.isDebugEnabled()) {
+                log.debug(
+                        "Fetched " + subscriptionList.size() + " subscriptions for listing (keys will not be fetched)");
+            }
+
+            // Convert subscriptions to discovered applications WITHOUT keys.
+            for (SubscriptionContract subscription : subscriptionList) {
+                try {
+                    // fetchKeys=false: Skip key fetching for listing performance
+                    DiscoveredApplication discoveredApp = AzureApplicationUtil.subscriptionToDiscoveredApplication(
+                            subscription, manager, resourceGroup, serviceName, productDataStore, false);
+                    discoveredApplications.add(discoveredApp);
+                } catch (Exception e) {
+                    log.error("Error converting Azure subscription to DiscoveredApplication: "
+                            + subscription.name(), e);
+                }
+            }
 
             if (log.isDebugEnabled()) {
                 log.debug("Discovered " + discoveredApplications.size() + " Azure subscriptions");
@@ -168,56 +176,54 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
             throw new APIManagementException("Error occurred while discovering Azure subscriptions", e);
         }
 
-        return discoveredApplications;
-    }
-
-    @Override
-    public DiscoveredApplicationResult discoverApplicationsWithPagination(int offset, int limit, String query)
-            throws APIManagementException {
-
-        List<DiscoveredApplication> applications = discoverApplications(offset, limit, query);
-        int totalCount = getTotalApplicationCount(query);
-
+        // Build and return result with continuation token-based pagination
         DiscoveredApplicationResult result = new DiscoveredApplicationResult();
-        result.setDiscoveredApplications(applications);
-        result.setTotalCount(totalCount);
+        result.setDiscoveredApplications(discoveredApplications);
+        result.setTotalCount(-1); // Azure doesn't support total count
         result.setOffset(offset);
         result.setLimit(limit);
-        result.setHasMoreResults(offset + applications.size() < totalCount);
+        result.setHasMoreResults(hasNext.get());
 
         return result;
     }
 
     @Override
-    public int getTotalApplicationCount() throws APIManagementException {
-        return getTotalApplicationCount(null);
-    }
+    public Stream<DiscoveredApplication> streamApplications(String query) throws APIManagementException {
+        if (log.isDebugEnabled()) {
+            log.debug("Streaming Azure subscriptions with query: " + query);
+        }
 
-    // TODO: Implement efficient method to reuse count logic
-    // TODO: Optimize count query if Azure API supports it in future,
-    // if not implement caching using inbuilt in-mem key value store
-    @Override
-    public int getTotalApplicationCount(String query) throws APIManagementException {
         try {
+            // Ensure product data store is initialized for tier mapping
+            productDataStore.initialize();
+
+            // Build filter for Azure API
             String filter = buildFilter(query);
+
+            // List all subscriptions - Azure SDK handles pagination automatically
             PagedIterable<SubscriptionContract> subscriptions = manager.subscriptions().list(
                     resourceGroup,
                     serviceName,
                     filter,
-                    null, // top: null to get all items
-                    null, // skip: null to start from beginning
+                    null, // no limit - stream all
+                    null, // no skip - start from beginning
                     Context.NONE);
 
-            // Count by iterating through pages
-            // Azure API Management SDK does not provide a direct count API,
-            // so we need to iterate through the results
-            int count = 0;
-            for (PagedResponse<SubscriptionContract> page : subscriptions.iterableByPage()) {
-                count += page.getValue().size();
-            }
-            return count;
+            return subscriptions.stream()
+                    .map(subscription -> {
+                        try {
+                            return AzureApplicationUtil.subscriptionToDiscoveredApplication(
+                                    subscription, manager, resourceGroup, serviceName, productDataStore, false);
+                        } catch (Exception e) {
+                            log.error("Error converting Azure subscription to DiscoveredApplication during streaming: "
+                                    + subscription.name(), e);
+                            return null;
+                        }
+                    })
+                    .filter(Objects::nonNull);
+
         } catch (Exception e) {
-            throw new APIManagementException("Error occurred while counting Azure subscriptions", e);
+            throw new APIManagementException("Error occurred while streaming Azure subscriptions", e);
         }
     }
 
@@ -256,8 +262,9 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
             // Ensure product data store is initialized
             productDataStore.initialize();
 
+            // fetchKeys=true: Fetch and mask keys for detail view
             return AzureApplicationUtil.subscriptionToDiscoveredApplication(
-                    subscription, manager, resourceGroup, serviceName, productDataStore);
+                    subscription, manager, resourceGroup, serviceName, productDataStore, true);
         } catch (APIManagementException e) {
             throw e;
         } catch (Exception e) {

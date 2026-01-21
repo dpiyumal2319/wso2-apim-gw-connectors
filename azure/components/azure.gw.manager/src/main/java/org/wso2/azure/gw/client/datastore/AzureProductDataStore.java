@@ -22,15 +22,17 @@ import com.azure.core.http.rest.PagedIterable;
 import com.azure.core.util.Context;
 import com.azure.resourcemanager.apimanagement.ApiManagementManager;
 import com.azure.resourcemanager.apimanagement.models.PolicyContract;
-import com.azure.resourcemanager.apimanagement.models.PolicyIdName;
 import com.azure.resourcemanager.apimanagement.models.ProductContract;
 import lombok.Getter;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.azure.gw.client.AzureConstants;
+import org.wso2.azure.gw.client.util.AzureAsyncClientHelper;
 import org.wso2.azure.gw.client.util.AzurePolicyParser;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -68,8 +70,8 @@ public class AzureProductDataStore {
     }
 
     /**
-     * Initializes the product cache by fetching all products and their policies.
-     * This is done lazily on first access to avoid unnecessary API calls.
+     * Initializes the product cache by fetching all products and their policies in parallel.
+     * Uses async parallel fetching to avoid N+1 query problem.
      */
     public synchronized void initialize() {
         if (initialized) {
@@ -81,7 +83,8 @@ public class AzureProductDataStore {
                 log.debug("Initializing Azure Product Data Store for service: " + serviceName);
             }
 
-            PagedIterable<ProductContract> products = manager.products().listByService(
+            // Fetch all products first
+            PagedIterable<ProductContract> productsIterable = manager.products().listByService(
                     resourceGroup, serviceName,
                     null, // filter
                     null, // top
@@ -90,46 +93,51 @@ public class AzureProductDataStore {
                     null, // tags
                     Context.NONE);
 
-            products.streamByPage().forEach(resp -> {
+            // Collect all products into a list for parallel processing
+            List<ProductContract> productList = new ArrayList<>();
+            productsIterable.streamByPage().forEach(resp -> {
                 if (log.isDebugEnabled()) {
                     log.debug(String.format("Fetched product page. Headers: %s. Status: %d",
                             resp.getHeaders(), resp.getStatusCode()));
                 }
                 resp.getElements().forEach(product -> {
-                    String productId = product.name();
-                    productNameCache.put(productId, product.displayName());
-
-                    // Try to fetch product policy
-                    try {
-                        PolicyContract policy = manager.productPolicies().get(
-                                resourceGroup, serviceName, productId, PolicyIdName.POLICY);
-
-                        if (policy != null && policy.value() != null) {
-                            Map<String, Integer> rateLimitInfo = AzurePolicyParser
-                                    .parseRateLimitFromPolicy(policy.value());
-
-                            if (!rateLimitInfo.isEmpty()) {
-                                productRateLimitCache.put(productId, rateLimitInfo);
-
-                                int calls = rateLimitInfo.getOrDefault("calls", 0);
-                                int renewalPeriod = rateLimitInfo.getOrDefault("renewal-period", 60);
-                                String tier = AzurePolicyParser.mapToWSO2Tier(calls, renewalPeriod);
-                                productTierCache.put(productId, tier);
-                            } else {
-                                productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
-                            }
-                        } else {
-                            productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
-                        }
-                    } catch (Exception e) {
-                        // Product might not have a policy defined
-                        if (log.isDebugEnabled()) {
-                            log.debug("No policy found for product: " + productId);
-                        }
-                        productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
-                    }
+                    productList.add(product);
+                    // Cache product name immediately
+                    productNameCache.put(product.name(), product.displayName());
                 });
             });
+
+            if (log.isDebugEnabled()) {
+                log.debug("Fetched " + productList.size() + " products, now fetching policies in parallel");
+            }
+
+            // Fetch all product policies in parallel
+            Map<String, PolicyContract> policyMap = AzureAsyncClientHelper.fetchProductPoliciesInParallel(
+                    manager, resourceGroup, serviceName, productList);
+
+            // Process policies and build tier cache
+            for (ProductContract product : productList) {
+                String productId = product.name();
+                PolicyContract policy = policyMap.get(productId);
+
+                if (policy != null && policy.value() != null) {
+                    Map<String, Integer> rateLimitInfo = AzurePolicyParser
+                            .parseRateLimitFromPolicy(policy.value());
+
+                    if (!rateLimitInfo.isEmpty()) {
+                        productRateLimitCache.put(productId, rateLimitInfo);
+
+                        int calls = rateLimitInfo.getOrDefault("calls", 0);
+                        int renewalPeriod = rateLimitInfo.getOrDefault("renewal-period", 60);
+                        String tier = AzurePolicyParser.mapToWSO2Tier(calls, renewalPeriod);
+                        productTierCache.put(productId, tier);
+                    } else {
+                        productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
+                    }
+                } else {
+                    productTierCache.put(productId, AzureConstants.AZURE_DEFAULT_TIER);
+                }
+            }
 
             initialized = true;
             if (log.isDebugEnabled()) {

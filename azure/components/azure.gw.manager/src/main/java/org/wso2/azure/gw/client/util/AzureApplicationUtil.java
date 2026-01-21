@@ -54,6 +54,7 @@ public class AzureApplicationUtil {
      * @param resourceGroup    The Azure resource group.
      * @param serviceName      The Azure APIM service name.
      * @param productDataStore The product data store for tier mapping.
+     * @param fetchKeys        Whether to fetch and include subscription keys (masked).
      * @return The converted DiscoveredApplication object.
      */
     public static DiscoveredApplication subscriptionToDiscoveredApplication(
@@ -61,7 +62,8 @@ public class AzureApplicationUtil {
             ApiManagementManager manager,
             String resourceGroup,
             String serviceName,
-            AzureProductDataStore productDataStore) {
+            AzureProductDataStore productDataStore,
+            boolean fetchKeys) {
 
         DiscoveredApplication discoveredApp = new DiscoveredApplication();
 
@@ -107,9 +109,13 @@ public class AzureApplicationUtil {
         String description = buildDescription(subscription, productName);
         discoveredApp.setDescription(description);
 
-        // Build key info list with masked values
-        List<DiscoveredApplicationKeyInfo> keyInfoList
-                = buildKeyInfoList(subscription, manager, resourceGroup, serviceName);
+        // Build key info list only if requested (keys are masked for security)
+        List<DiscoveredApplicationKeyInfo> keyInfoList;
+        if (fetchKeys) {
+            keyInfoList = buildKeyInfoList(subscription, manager, resourceGroup, serviceName);
+        } else {
+            keyInfoList = new ArrayList<>(); // Empty list for listing
+        }
         discoveredApp.setKeyInfoList(keyInfoList);
 
         // Generate reference artifact
@@ -191,7 +197,7 @@ public class AzureApplicationUtil {
      * @param manager       The Azure API Management Manager.
      * @param resourceGroup The Azure resource group.
      * @param serviceName   The Azure APIM service name.
-     * @return List of DiscoveredApplicationKeyInfo objects.
+     * @return List of DiscoveredApplicationKeyInfo objects with masked keys.
      */
     public static List<DiscoveredApplicationKeyInfo> buildKeyInfoList(
             SubscriptionContract subscription,
@@ -202,7 +208,7 @@ public class AzureApplicationUtil {
         List<DiscoveredApplicationKeyInfo> keyInfoList = new ArrayList<>();
 
         try {
-            // Get subscription keys (masked for display)
+            // Fetch subscription keys from Azure
             SubscriptionKeysContract keys = manager.subscriptions().listSecrets(
                     resourceGroup, serviceName, subscription.name());
 
