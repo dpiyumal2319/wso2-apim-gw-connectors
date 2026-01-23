@@ -35,6 +35,7 @@ import org.wso2.azure.gw.client.util.AzureApplicationUtil;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedApplicationDiscovery;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplication;
+import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationInfo;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 
@@ -116,7 +117,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
                     + limit + ", query: " + query);
         }
 
-        List<DiscoveredApplication> discoveredApplications = new ArrayList<>();
+        List<DiscoveredApplicationInfo> discoveredApplications = new ArrayList<>();
         AtomicBoolean hasNext = new AtomicBoolean(false);
 
         try {
@@ -155,15 +156,16 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
                         "Fetched " + subscriptionList.size() + " subscriptions for listing (keys will not be fetched)");
             }
 
-            // Convert subscriptions to discovered applications WITHOUT keys.
+            // Convert subscriptions to lightweight discovered application info WITHOUT keys.
             for (SubscriptionContract subscription : subscriptionList) {
                 try {
-                    // fetchKeys=false: Skip key fetching for listing performance
-                    DiscoveredApplication discoveredApp = AzureApplicationUtil.subscriptionToDiscoveredApplication(
-                            subscription, manager, resourceGroup, serviceName, productDataStore, false);
+                    // Convert to lightweight info object for listing
+                    DiscoveredApplicationInfo discoveredApp = AzureApplicationUtil.
+                            subscriptionToDiscoveredApplicationInfo(subscription, manager, resourceGroup, serviceName,
+                                    productDataStore);
                     discoveredApplications.add(discoveredApp);
                 } catch (Exception e) {
-                    log.error("Error converting Azure subscription to DiscoveredApplication: "
+                    log.error("Error converting Azure subscription to DiscoveredApplicationInfo: "
                             + subscription.name(), e);
                 }
             }
@@ -188,7 +190,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
     }
 
     @Override
-    public Stream<DiscoveredApplication> streamApplications(String query) throws APIManagementException {
+    public Stream<DiscoveredApplicationInfo> streamApplications(String query) throws APIManagementException {
         if (log.isDebugEnabled()) {
             log.debug("Streaming Azure subscriptions with query: " + query);
         }
@@ -212,10 +214,11 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
             return subscriptions.stream()
                     .map(subscription -> {
                         try {
-                            return AzureApplicationUtil.subscriptionToDiscoveredApplication(
-                                    subscription, manager, resourceGroup, serviceName, productDataStore, false);
+                            return AzureApplicationUtil.subscriptionToDiscoveredApplicationInfo(
+                                    subscription, manager, resourceGroup, serviceName, productDataStore);
                         } catch (Exception e) {
-                            log.error("Error converting Azure subscription to DiscoveredApplication during streaming: "
+                            log.error(
+                            "Error converting Azure subscription to DiscoveredApplicationInfo during streaming: "
                                     + subscription.name(), e);
                             return null;
                         }
@@ -250,7 +253,7 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
     }
 
     @Override
-    public DiscoveredApplication getApplication(String externalId) throws APIManagementException {
+    public DiscoveredApplication getApplicationWithKeysMasked(String externalId) throws APIManagementException {
         try {
             SubscriptionContract subscription = manager.subscriptions().get(
                     resourceGroup, serviceName, externalId);
@@ -262,9 +265,9 @@ public class AzureFederatedApplicationDiscovery implements FederatedApplicationD
             // Ensure product data store is initialized
             productDataStore.initialize();
 
-            // fetchKeys=true: Fetch and mask keys for detail view
+            // Fetch full details with masked keys and API subscriptions
             return AzureApplicationUtil.subscriptionToDiscoveredApplication(
-                    subscription, manager, resourceGroup, serviceName, productDataStore, true);
+                    subscription, manager, resourceGroup, serviceName, productDataStore);
         } catch (APIManagementException e) {
             throw e;
         } catch (Exception e) {

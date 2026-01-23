@@ -29,6 +29,7 @@ import org.wso2.azure.gw.client.AzureConstants;
 import org.wso2.azure.gw.client.datastore.AzureProductDataStore;
 import org.wso2.azure.gw.client.model.AzureSubscriptionKeyInfo;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplication;
+import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationInfo;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationKeyInfo;
 
 import java.time.format.DateTimeFormatter;
@@ -57,71 +58,87 @@ public class AzureApplicationUtil {
      * @param fetchKeys        Whether to fetch and include subscription keys (masked).
      * @return The converted DiscoveredApplication object.
      */
+    /**
+     * Converts an Azure SubscriptionContract to a full DiscoveredApplication with keys and API subscriptions.
+     * This is used for detail operations where complete information including masked keys is needed.
+     *
+     * @param subscription     The Azure subscription contract
+     * @param manager          The Azure API Management Manager
+     * @param resourceGroup    The Azure resource group
+     * @param serviceName      The Azure APIM service name
+     * @param productDataStore Product data store for tier/product mapping
+     * @return DiscoveredApplication with full details including keys and subscriptions
+     */
     public static DiscoveredApplication subscriptionToDiscoveredApplication(
             SubscriptionContract subscription,
             ApiManagementManager manager,
             String resourceGroup,
             String serviceName,
-            AzureProductDataStore productDataStore,
-            boolean fetchKeys) {
+            AzureProductDataStore productDataStore) {
 
-        DiscoveredApplication discoveredApp = new DiscoveredApplication();
+        // First get lightweight info
+        org.wso2.carbon.apimgt.api.model.DiscoveredApplicationInfo info =
+                subscriptionToDiscoveredApplicationInfo(subscription, manager, resourceGroup,
+                        serviceName, productDataStore);
 
-        // Set basic properties
-        discoveredApp.setExternalId(subscription.name());
-        discoveredApp.setName(subscription.displayName() != null ? subscription.displayName() : subscription.name());
+        // Convert to full application
+        DiscoveredApplication discoveredApp = new DiscoveredApplication(info);
 
-        // Extract owner information if available
-        String ownerId = subscription.ownerId();
-        if (ownerId != null && !ownerId.isEmpty()) {
-            // Extract the user name from the owner ID path
-            // Format:
-            // /subscriptions/{subId}/resourceGroups/{rg}/providers/Microsoft.ApiManagement/service/{svc}/users/{userId}
-            String[] parts = ownerId.split("/");
-            if (parts.length > 0) {
-                discoveredApp.setOwner(parts[parts.length - 1]);
+        // Fetch and add masked keys
+        try {
+            SubscriptionKeysContract keys = manager.subscriptions()
+                    .listSecrets(resourceGroup, serviceName, subscription.name());
+
+            if (keys != null) {
+                List<DiscoveredApplicationKeyInfo> keyInfoList = new ArrayList<>();
+
+                if (keys.primaryKey() != null) {
+                    DiscoveredApplicationKeyInfo primaryKey = new DiscoveredApplicationKeyInfo();
+                    primaryKey.setKeyType("PRIMARY");
+                    primaryKey.setKeyName("Primary Key");
+                    primaryKey.setMaskedKeyValue(AzureSubscriptionKeyInfo.maskKeyValue(keys.primaryKey()));
+                    primaryKey.setExternalKeyReference(subscription.name() + ":primary");
+                    keyInfoList.add(primaryKey);
+                }
+
+                if (keys.secondaryKey() != null) {
+                    DiscoveredApplicationKeyInfo secondaryKey = new DiscoveredApplicationKeyInfo();
+                    secondaryKey.setKeyType("SECONDARY");
+                    secondaryKey.setKeyName("Secondary Key");
+                    secondaryKey.setMaskedKeyValue(AzureSubscriptionKeyInfo.maskKeyValue(keys.secondaryKey()));
+                    secondaryKey.setExternalKeyReference(subscription.name() + ":secondary");
+                    keyInfoList.add(secondaryKey);
+                }
+
+                discoveredApp.setKeyInfoList(keyInfoList);
             }
+        } catch (Exception e) {
+            log.error("Error fetching keys for subscription: " + subscription.name(), e);
         }
 
-        // Set created time
-        if (subscription.createdDate() != null) {
-            discoveredApp.setCreatedTime(subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        // Fetch and add API subscriptions
+        try {
+            String productId = subscription.scope();
+            if (productId != null && !productId.isEmpty()) {
+                org.wso2.carbon.apimgt.api.model.DiscoveredAPISubscription apiSub =
+                        new org.wso2.carbon.apimgt.api.model.DiscoveredAPISubscription();
+                
+                // Extract product name from scope
+                String[] scopeParts = productId.split("/");
+                if (scopeParts.length > 0) {
+                    String productName = scopeParts[scopeParts.length - 1];
+                    apiSub.setApiId(productId);
+                    apiSub.setApiName(productName);
+                    apiSub.setSubscriptionTier(discoveredApp.getThrottlingTier());
+                    apiSub.setSubscriptionStatus(subscription.state() != null ?
+                            subscription.state().toString() : "ACTIVE");
+                }
+                
+                discoveredApp.addApiSubscription(apiSub);
+            }
+        } catch (Exception e) {
+            log.error("Error fetching API subscriptions for subscription: " + subscription.name(), e);
         }
-
-        // Map subscription state
-        if (subscription.state() != null) {
-            discoveredApp.setAttributes(createAttributesMap(subscription));
-        }
-
-        // Extract product ID and get tier
-        String scope = subscription.scope();
-        String productId = extractProductIdFromScope(scope);
-        String tier = AzureConstants.AZURE_DEFAULT_TIER;
-        String productName = productId;
-
-        if (productId != null && productDataStore != null) {
-            tier = productDataStore.getTierForProduct(productId);
-            productName = productDataStore.getProductName(productId);
-        }
-        discoveredApp.setThrottlingTier(tier);
-
-        // Set description
-        String description = buildDescription(subscription, productName);
-        discoveredApp.setDescription(description);
-
-        // Build key info list only if requested (keys are masked for security)
-        List<DiscoveredApplicationKeyInfo> keyInfoList;
-        if (fetchKeys) {
-            keyInfoList = buildKeyInfoList(subscription, manager, resourceGroup, serviceName);
-        } else {
-            keyInfoList = new ArrayList<>(); // Empty list for listing
-        }
-        discoveredApp.setKeyInfoList(keyInfoList);
-
-        // Generate reference artifact
-        String referenceArtifact = generateApplicationReferenceArtifact(
-                subscription, productId, productName, productDataStore);
-        discoveredApp.setReferenceArtifact(referenceArtifact);
 
         return discoveredApp;
     }
@@ -386,6 +403,98 @@ public class AzureApplicationUtil {
             return true;
         }
         return !a.equals(b);
+    }
+
+    /**
+     * Converts an Azure SubscriptionContract to a lightweight DiscoveredApplicationInfo.
+     * This is used for listing operations where keys and subscriptions are not needed.
+     *
+     * @param subscription     The Azure subscription contract
+     * @param manager          The Azure API Management Manager
+     * @param resourceGroup    The Azure resource group
+     * @param serviceName      The Azure APIM service name
+     * @param productDataStore The product data store for tier mapping
+     * @return The converted DiscoveredApplicationInfo object
+     */
+    public static DiscoveredApplicationInfo subscriptionToDiscoveredApplicationInfo(
+            SubscriptionContract subscription,
+            ApiManagementManager manager,
+            String resourceGroup,
+            String serviceName,
+            AzureProductDataStore productDataStore) {
+
+        DiscoveredApplicationInfo info =
+                new DiscoveredApplicationInfo();
+
+        // Set basic properties
+        info.setExternalId(subscription.name());
+        info.setName(subscription.displayName() != null ? subscription.displayName() : subscription.name());
+
+        // Extract owner information
+        String ownerId = subscription.ownerId();
+        if (ownerId != null && !ownerId.isEmpty()) {
+            String[] parts = ownerId.split("/");
+            if (parts.length > 0) {
+                info.setOwner(parts[parts.length - 1]);
+            }
+        }
+
+        // Set creation time
+        if (subscription.createdDate() != null) {
+            info.setCreatedTime(subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        }
+
+        // Map throttling tier from product
+        String productId = subscription.scope();
+        if (productId != null && !productId.isEmpty()) {
+            String tierName = productDataStore.getTierForProduct(productId);
+            info.setThrottlingTier(tierName != null ? tierName : AzureConstants.AZURE_DEFAULT_TIER);
+        } else {
+            info.setThrottlingTier(AzureConstants.AZURE_DEFAULT_TIER);
+        }
+
+        // Set reference artifact for import
+        info.setReferenceArtifact(buildReferenceArtifact(subscription, info.getThrottlingTier()));
+
+        // Set attributes
+        Map<String, String> attributes = new HashMap<>();
+        if (subscription.scope() != null) {
+            attributes.put("scope", subscription.scope());
+        }
+        if (subscription.state() != null) {
+            attributes.put("state", subscription.state().toString());
+        }
+        info.setAttributes(attributes);
+
+        return info;
+    }
+
+    /**
+     * Converts an Azure SubscriptionContract to a full DiscoveredApplication with keys and subscriptions.
+     * This is used for detail view operations.
+     *
+     * @param subscription     The Azure subscription contract
+     * @param manager          The Azure API Management Manager
+     * @param resourceGroup    The Azure resource group
+     * @param serviceName      The Azure APIM service name
+     * @param productDataStore The product data store for tier mapping
+     * @return The converted DiscoveredApplication object with keys and subscriptions
+     */
+    /**
+     * Builds the reference artifact JSON for an Azure subscription.
+     *
+     * @param subscription The Azure subscription
+     * @param tierName     The mapped tier name
+     * @return JSON string representation
+     */
+    private static String buildReferenceArtifact(SubscriptionContract subscription, String tierName) {
+        JsonObject artifact = new JsonObject();
+        artifact.addProperty("externalId", subscription.name());
+        artifact.addProperty("displayName", subscription.displayName());
+        artifact.addProperty("scope", subscription.scope());
+        artifact.addProperty("tier", tierName);
+        artifact.addProperty("gatewayType", AzureConstants.AZURE_TYPE);
+        return gson.toJson(artifact);
     }
 }
 
