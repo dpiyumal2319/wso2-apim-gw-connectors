@@ -119,4 +119,10 @@ public class AzureConstants {
 
     // Default tier mapping
     public static final String AZURE_DEFAULT_TIER = "Unlimited";
+
+    // Subscription scope patterns
+    public static final String AZURE_SCOPE_PRODUCT_PATTERN = 
+            ".*/providers/Microsoft\\.ApiManagement/service/[^/]+/products/([^/]+).*";
+    public static final String AZURE_SCOPE_API_PATTERN = 
+            ".*/providers/Microsoft\\.ApiManagement/service/[^/]+/apis/([^/]+).*";
 }

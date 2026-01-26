@@ -18,9 +18,12 @@
 
 package org.wso2.azure.gw.client.util;
 
+import com.azure.core.http.rest.PagedIterable;
 import com.azure.resourcemanager.apimanagement.ApiManagementManager;
+import com.azure.resourcemanager.apimanagement.models.ApiContract;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionContract;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionKeysContract;
+import com.azure.resourcemanager.apimanagement.models.SubscriptionState;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import org.apache.commons.logging.Log;
@@ -28,7 +31,9 @@ import org.apache.commons.logging.LogFactory;
 import org.wso2.azure.gw.client.AzureConstants;
 import org.wso2.azure.gw.client.datastore.AzureProductDataStore;
 import org.wso2.azure.gw.client.model.AzureSubscriptionKeyInfo;
+import org.wso2.carbon.apimgt.api.model.DiscoveredAPISubscription;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplication;
+import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationBuilder;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationInfo;
 import org.wso2.carbon.apimgt.api.model.DiscoveredApplicationKeyInfo;
 
@@ -48,26 +53,27 @@ public class AzureApplicationUtil {
     private static final Gson gson = new Gson();
 
     /**
-     * Converts an Azure SubscriptionContract to a DiscoveredApplication.
-     *
-     * @param subscription     The Azure subscription contract.
-     * @param manager          The Azure API Management Manager.
-     * @param resourceGroup    The Azure resource group.
-     * @param serviceName      The Azure APIM service name.
-     * @param productDataStore The product data store for tier mapping.
-     * @param fetchKeys        Whether to fetch and include subscription keys (masked).
-     * @return The converted DiscoveredApplication object.
-     */
-    /**
      * Converts an Azure SubscriptionContract to a full DiscoveredApplication with keys and API subscriptions.
      * This is used for detail operations where complete information including masked keys is needed.
+     * <p>
+     * For Azure subscriptions:
+     * <ul>
+     *   <li>If subscription scope is to a <b>product</b> (/products/{productId}), all APIs within that
+     *       product are fetched and added as discovered API subscriptions.</li>
+     *   <li>If subscription scope is to a single <b>API</b> (/apis/{apiId}), only that API is added.</li>
+     * </ul>
+     * </p>
+     * <p>
+     * Note: Azure doesn't support product discovery as entities in WSO2, so we expand products
+     * to their constituent APIs at the application subscription level.
+     * </p>
      *
      * @param subscription     The Azure subscription contract
      * @param manager          The Azure API Management Manager
      * @param resourceGroup    The Azure resource group
      * @param serviceName      The Azure APIM service name
      * @param productDataStore Product data store for tier/product mapping
-     * @return DiscoveredApplication with full details including keys and subscriptions
+     * @return DiscoveredApplication with full details including keys and API subscriptions
      */
     public static DiscoveredApplication subscriptionToDiscoveredApplication(
             SubscriptionContract subscription,
@@ -76,22 +82,18 @@ public class AzureApplicationUtil {
             String serviceName,
             AzureProductDataStore productDataStore) {
 
-        // First get lightweight info
-        org.wso2.carbon.apimgt.api.model.DiscoveredApplicationInfo info =
+        // Stage 1: Get lightweight info (base info)
+        DiscoveredApplicationInfo info =
                 subscriptionToDiscoveredApplicationInfo(subscription, manager, resourceGroup,
                         serviceName, productDataStore);
 
-        // Convert to full application
-        DiscoveredApplication discoveredApp = new DiscoveredApplication(info);
-
-        // Fetch and add masked keys
+        // Stage 2: Fetch and prepare masked keys
+        List<DiscoveredApplicationKeyInfo> keyInfoList = new ArrayList<>();
         try {
             SubscriptionKeysContract keys = manager.subscriptions()
                     .listSecrets(resourceGroup, serviceName, subscription.name());
 
             if (keys != null) {
-                List<DiscoveredApplicationKeyInfo> keyInfoList = new ArrayList<>();
-
                 if (keys.primaryKey() != null) {
                     DiscoveredApplicationKeyInfo primaryKey = new DiscoveredApplicationKeyInfo();
                     primaryKey.setKeyType("PRIMARY");
@@ -109,42 +111,145 @@ public class AzureApplicationUtil {
                     secondaryKey.setExternalKeyReference(subscription.name() + ":secondary");
                     keyInfoList.add(secondaryKey);
                 }
-
-                discoveredApp.setKeyInfoList(keyInfoList);
             }
         } catch (Exception e) {
             log.error("Error fetching keys for subscription: " + subscription.name(), e);
         }
 
-        // Fetch and add API subscriptions
+        // Stage 3: Prepare API subscriptions with external reference IDs
+        // If subscription is to a product, fetch all APIs in that product
+        List<DiscoveredAPISubscription> apiSubscriptions = new ArrayList<>();
         try {
-            String productId = subscription.scope();
-            if (productId != null && !productId.isEmpty()) {
-                org.wso2.carbon.apimgt.api.model.DiscoveredAPISubscription apiSub =
-                        new org.wso2.carbon.apimgt.api.model.DiscoveredAPISubscription();
-                
-                // Extract product name from scope
-                String[] scopeParts = productId.split("/");
-                if (scopeParts.length > 0) {
-                    String productName = scopeParts[scopeParts.length - 1];
-                    apiSub.setApiId(productId);
-                    apiSub.setApiName(productName);
-                    apiSub.setSubscriptionTier(discoveredApp.getThrottlingTier());
-                    apiSub.setSubscriptionStatus(subscription.state() != null ?
-                            subscription.state().toString() : "ACTIVE");
+            String scope = subscription.scope();
+            if (scope != null && !scope.isEmpty()) {
+                // Check if scope is for a product using regex pattern
+                String productId = extractProductIdFromScope(scope);
+                if (productId != null && !productId.isEmpty()) {
+                    // Fetch all APIs in the product
+                    apiSubscriptions.addAll(fetchApisInProduct(
+                            manager, resourceGroup, serviceName, productId, 
+                            info.getThrottlingTier(), subscription.state()));
+                } else {
+                    // Check if scope is for a direct API subscription
+                    String apiId = extractApiIdFromScope(scope);
+                    if (apiId != null && !apiId.isEmpty()) {
+                        DiscoveredAPISubscription apiSub = new DiscoveredAPISubscription();
+                        apiSub.setExternalApiId(apiId);
+                        apiSub.setApiName(apiId); // Will be updated during enrichment
+                        apiSub.setSubscriptionTier(info.getThrottlingTier());
+                        apiSub.setSubscriptionStatus(subscription.state() != null ?
+                                subscription.state().toString() : "ACTIVE");
+                        apiSubscriptions.add(apiSub);
+                    }
                 }
-                
-                discoveredApp.addApiSubscription(apiSub);
             }
         } catch (Exception e) {
             log.error("Error fetching API subscriptions for subscription: " + subscription.name(), e);
         }
 
-        return discoveredApp;
+        // Build application using the builder pattern (Stages 1-3 only)
+        // Note: Stage 4 (DB enrichment) is NOT performed here - that's done by the service layer
+        return DiscoveredApplicationBuilder.from(info)
+                .withKeys(keyInfoList)
+                .withExternalApiReferences(apiSubscriptions)
+                .build();
     }
 
     /**
-     * Extracts the product ID from the Azure subscription scope.
+     * Fetches all APIs in an Azure product and creates DiscoveredAPISubscription objects.
+     *
+     * @param manager          The Azure API Management Manager
+     * @param resourceGroup    The Azure resource group
+     * @param serviceName      The Azure APIM service name
+     * @param productId        The product ID
+     * @param throttlingTier   The subscription throttling tier
+     * @param subscriptionState The subscription state
+     * @return List of DiscoveredAPISubscription objects
+     */
+    private static List<DiscoveredAPISubscription> fetchApisInProduct(
+            ApiManagementManager manager, String resourceGroup, String serviceName,
+            String productId, String throttlingTier, 
+            SubscriptionState subscriptionState) {
+
+        List<DiscoveredAPISubscription> apiSubscriptions = new ArrayList<>();
+
+        try {
+            // Fetch all APIs associated with the product
+            PagedIterable<ApiContract> productApis =
+                    manager.productApis().listByProduct(resourceGroup, serviceName, productId);
+
+            if (productApis != null) {
+                for (ApiContract api : productApis) {
+                    DiscoveredAPISubscription apiSub = new DiscoveredAPISubscription();
+
+                    // Normalize Azure API ID to remove product path segment
+                    // Azure returns: /subscriptions/.../products/{productId}/apis/{apiId}
+                    // Database stores: /subscriptions/.../apis/{apiId}
+                    String normalizedApiId = normalizeAzureApiId(api.id());
+                    apiSub.setExternalApiId(normalizedApiId);
+                    apiSub.setApiName(api.displayName() != null ? api.displayName() : api.name());
+                    apiSub.setApiVersion(api.apiVersion() != null ? api.apiVersion() : "1.0");
+                    apiSub.setSubscriptionTier(throttlingTier);
+                    apiSub.setSubscriptionStatus(subscriptionState != null ?
+                            subscriptionState.toString() : "ACTIVE");
+
+                    apiSubscriptions.add(apiSub);
+                }
+
+                if (log.isDebugEnabled()) {
+                    log.debug("Found " + apiSubscriptions.size() + " APIs in product: " + productId);
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error fetching APIs for product: " + productId, e);
+        }
+
+        return apiSubscriptions;
+    }
+
+    /**
+     * Normalizes Azure API ID by removing product path segment if present.
+     * Converts: /subscriptions/.../products/{productId}/apis/{apiId}
+     * To: /subscriptions/.../apis/{apiId}
+     *
+     * @param apiId The full Azure API resource ID
+     * @return The normalized API ID without product path segment
+     */
+    private static String normalizeAzureApiId(String apiId) {
+        if (apiId == null || apiId.isEmpty()) {
+            return apiId;
+        }
+        // Remove /products/{productId} segment if present
+        return apiId.replaceAll("/products/[^/]+(?=/apis/)", "");
+    }
+
+    /**
+     * Extracts the API ID from the Azure subscription scope using regex.
+     * Scope format:
+     * /subscriptions/{subId}/resourceGroups/{rg}/providers/Microsoft.ApiManagement/service/{service}/apis/{apiId}
+     *
+     * @param scope The subscription scope path.
+     * @return The API ID, or null if scope is not an API.
+     */
+    private static String extractApiIdFromScope(String scope) {
+        if (scope == null || scope.isEmpty()) {
+            return null;
+        }
+        try {
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                    AzureConstants.AZURE_SCOPE_API_PATTERN);
+            java.util.regex.Matcher matcher = pattern.matcher(scope);
+            if (matcher.matches() && matcher.groupCount() >= 1) {
+                return matcher.group(1);
+            }
+        } catch (Exception e) {
+            log.warn("Error parsing API scope: " + scope, e);
+        }
+        return null;
+    }
+
+    /**
+     * Extracts the product ID from the Azure subscription scope using regex.
      *
      * @param scope The subscription scope path.
      * @return The product ID, or null if scope is not a product.
@@ -153,9 +258,15 @@ public class AzureApplicationUtil {
         if (scope == null || scope.isEmpty()) {
             return null;
         }
-        // Scope format: /products/{productId} or /apis/{apiId}
-        if (scope.startsWith("/products/")) {
-            return scope.substring("/products/".length());
+        try {
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                    AzureConstants.AZURE_SCOPE_PRODUCT_PATTERN);
+            java.util.regex.Matcher matcher = pattern.matcher(scope);
+            if (matcher.matches() && matcher.groupCount() >= 1) {
+                return matcher.group(1);
+            }
+        } catch (Exception e) {
+            log.warn("Error parsing product scope: " + scope, e);
         }
         return null;
     }
@@ -469,17 +580,6 @@ public class AzureApplicationUtil {
         return info;
     }
 
-    /**
-     * Converts an Azure SubscriptionContract to a full DiscoveredApplication with keys and subscriptions.
-     * This is used for detail view operations.
-     *
-     * @param subscription     The Azure subscription contract
-     * @param manager          The Azure API Management Manager
-     * @param resourceGroup    The Azure resource group
-     * @param serviceName      The Azure APIM service name
-     * @param productDataStore The product data store for tier mapping
-     * @return The converted DiscoveredApplication object with keys and subscriptions
-     */
     /**
      * Builds the reference artifact JSON for an Azure subscription.
      *
