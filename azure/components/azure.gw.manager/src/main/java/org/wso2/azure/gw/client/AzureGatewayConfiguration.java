@@ -81,6 +81,16 @@ public class AzureGatewayConfiguration implements GatewayAgentConfiguration {
     }
 
     /**
+     * Returns the Subscription Agent implementation class name.
+     *
+     * @return The fully qualified class name of the subscription agent implementation.
+     */
+    @Override
+    public String getSubscriptionAgentImplementation() {
+        return AzureFederatedSubscriptionAgent.class.getName();
+    }
+
+    /**
      * Returns the configuration values required to connect to Azure API Management.
      */
     @Override
