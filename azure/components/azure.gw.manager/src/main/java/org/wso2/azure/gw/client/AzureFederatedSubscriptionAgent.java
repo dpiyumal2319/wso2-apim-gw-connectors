@@ -51,7 +51,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     private static final Log log = LogFactory.getLog(AzureFederatedSubscriptionAgent.class);
     private static final String GATEWAY_TYPE = "Azure";
-    private static final String CREDENTIAL_TYPE = "subscription-key";
+    private static final String CREDENTIAL_TYPE = "opaque-api-key";
     private static final String HEADER_NAME = "Ocp-Apim-Subscription-Key";
     private static final String QUERY_PARAM_NAME = "subscription-key";
 
@@ -153,9 +153,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             // Build and return the credential with full primary key value
             FederatedCredential credential = new FederatedCredential();
             credential.setCredentialType(CREDENTIAL_TYPE);
-            credential.setHeaderName(HEADER_NAME);
             credential.setExternalSubscriptionId(subscription.name());
-            credential.setExternalContainerId(apiScope);
+            credential.setValueRetrievable(true);
             credential.setMasked(false);
 
             // Return the primary key as the credential
@@ -239,9 +238,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             // Build and return the credential with the new primary key
             FederatedCredential credential = new FederatedCredential();
             credential.setCredentialType(CREDENTIAL_TYPE);
-            credential.setHeaderName(HEADER_NAME);
             credential.setExternalSubscriptionId(externalSubscriptionId);
-            credential.setExternalContainerId(subscription.scope());
+            credential.setValueRetrievable(true);
             credential.setMasked(false);
 
             if (keys != null && keys.primaryKey() != null) {
@@ -328,6 +326,107 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
+    public FederatedCredential retrieveCredential(String externalSubscriptionId) throws APIManagementException {
+        if (log.isDebugEnabled()) {
+            log.debug("Retrieving credential for Azure subscription: " + externalSubscriptionId);
+        }
+
+        try {
+            // Verify subscription exists
+            SubscriptionContract subscription = manager.subscriptions()
+                    .get(resourceGroup, serviceName, externalSubscriptionId);
+
+            if (subscription == null) {
+                throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
+            }
+
+            // Retrieve the subscription keys
+            SubscriptionKeysContract keys = manager.subscriptions()
+                    .listSecrets(resourceGroup, serviceName, externalSubscriptionId);
+
+            // Build and return the credential with full primary key
+            FederatedCredential credential = new FederatedCredential();
+            credential.setCredentialType(CREDENTIAL_TYPE);
+            credential.setExternalSubscriptionId(externalSubscriptionId);
+            credential.setValueRetrievable(true);
+            credential.setMasked(false);
+
+            if (keys != null && keys.primaryKey() != null) {
+                credential.setCredentialValue(keys.primaryKey());
+            } else {
+                throw new APIManagementException("Failed to retrieve subscription key from Azure");
+            }
+
+            // Set timestamps
+            if (subscription.createdDate() != null) {
+                credential.setCreatedTime(subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+            }
+
+            if (log.isDebugEnabled()) {
+                log.debug("Credential retrieved successfully for: " + externalSubscriptionId);
+            }
+
+            return credential;
+
+        } catch (Exception e) {
+            log.error("Error retrieving credential for subscription: " + externalSubscriptionId, e);
+            throw new APIManagementException("Failed to retrieve credential from Azure APIM: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public String buildSubscriptionReferenceArtifact(FederatedCredential credential,
+                                                      InvocationInstruction instruction) {
+        JsonObject json = new JsonObject();
+
+        if (credential != null) {
+            JsonObject credJson = new JsonObject();
+            credJson.addProperty("credentialType", credential.getCredentialType());
+            credJson.addProperty("maskedValue", maskCredential(credential.getCredentialValue()));
+            credJson.addProperty("isValueRetrievable", credential.isValueRetrievable());
+            json.add("credential", credJson);
+        }
+
+        if (instruction != null) {
+            JsonObject instrJson = new JsonObject();
+            instrJson.addProperty("gatewayType", instruction.getGatewayType());
+            instrJson.addProperty("headerName", instruction.getHeaderName());
+            instrJson.addProperty("basePath", instruction.getBasePath());
+            instrJson.addProperty("curlExample", instruction.getCurlExample());
+            instrJson.addProperty("notes", instruction.getNotes());
+            json.add("invocationInstruction", instrJson);
+        }
+
+        return json.toString();
+    }
+
+    @Override
+    public FederatedCredential extractCredentialFromReferenceArtifact(String subscriptionReferenceArtifact) {
+        FederatedCredential credential = new FederatedCredential();
+        if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
+            return credential;
+        }
+        try {
+            JsonObject json = JsonParser.parseString(subscriptionReferenceArtifact).getAsJsonObject();
+            JsonObject credJson = json.has("credential") ? json.getAsJsonObject("credential") : null;
+            if (credJson != null) {
+                if (credJson.has("credentialType")) {
+                    credential.setCredentialType(credJson.get("credentialType").getAsString());
+                }
+                if (credJson.has("maskedValue")) {
+                    credential.setCredentialValue(credJson.get("maskedValue").getAsString());
+                }
+                if (credJson.has("isValueRetrievable")) {
+                    credential.setValueRetrievable(credJson.get("isValueRetrievable").getAsBoolean());
+                }
+            }
+        } catch (JsonSyntaxException e) {
+            log.warn("Failed to parse subscription reference artifact", e);
+        }
+        return credential;
+    }
+
+    @Override
     public boolean subscriptionExists(String externalSubscriptionId) throws APIManagementException {
         try {
             SubscriptionContract subscription = manager.subscriptions()
@@ -345,6 +444,44 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     @Override
     public String getGatewayType() {
         return GATEWAY_TYPE;
+    }
+
+    @Override
+    public String[] getSupportedAuthTypes(String apiReferenceArtifact) throws APIManagementException {
+        if (log.isDebugEnabled()) {
+            log.debug("Checking subscription support for API");
+        }
+
+        try {
+            // Extract Azure API ID from reference artifact
+            String azureApiId = extractAzureApiIdFromReferenceArtifact(apiReferenceArtifact);
+            String apiName = extractApiNameFromId(azureApiId);
+
+            // Get API from Azure
+            ApiContract apiContract = manager.apis().get(resourceGroup, serviceName, apiName);
+
+            if (apiContract == null) {
+                throw new APIManagementException("API not found in Azure: " + apiName);
+            }
+
+            // Check if subscription required
+            Boolean subscriptionRequired = apiContract.subscriptionRequired();
+
+            if (subscriptionRequired != null && subscriptionRequired) {
+                if (log.isDebugEnabled()) {
+                    log.debug("API requires subscription: " + apiName);
+                }
+                return new String[]{"opaque-api-key"};
+            } else {
+                if (log.isDebugEnabled()) {
+                    log.debug("API does not require subscription: " + apiName);
+                }
+                return new String[]{};  // No subscription security
+            }
+        } catch (Exception e) {
+            log.error("Error checking subscription support for API", e);
+            throw new APIManagementException("Failed to check subscription support: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -505,5 +642,18 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             return value;
         }
         return value.substring(0, length);
+    }
+
+    protected String maskCredential(String credentialValue) {
+        if (credentialValue == null || credentialValue.isEmpty()) {
+            return credentialValue;
+        }
+        int length = credentialValue.length();
+        int visibleChars = 4;
+        if (length <= visibleChars) {
+            return "•".repeat(length);
+        }
+        int maskLength = Math.min(8, length - visibleChars);
+        return "•".repeat(maskLength) + credentialValue.substring(length - visibleChars);
     }
 }
