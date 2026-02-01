@@ -15,7 +15,13 @@
       "applicationDiscovery": {
         "supported": true,
         "capabilities": ["list", "search", "import", "pagination"]
-      }
+      },
+      "federatedSubscription": [
+        {
+          "credentialSchema": "primary-secondary-key-pair",
+          "invocationSchema": "header-with-query-fallback"
+        }
+      ]
     }
   }
 }

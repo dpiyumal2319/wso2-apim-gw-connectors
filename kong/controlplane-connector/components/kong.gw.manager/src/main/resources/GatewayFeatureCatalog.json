@@ -38,7 +38,8 @@
       "endpointSecurity": [
         "basicAuth"
       ],
-      "tryout": []
+      "tryout": [],
+      "federatedSubscription": []
     }
   }
 }

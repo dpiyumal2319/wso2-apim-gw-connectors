@@ -28,7 +28,8 @@
         "typeSANDBOX"
       ],
       "endpointSecurity": [],
-      "tryout": []
+      "tryout": [],
+      "federatedSubscription": []
     }
   }
 }

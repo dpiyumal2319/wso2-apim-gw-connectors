@@ -22,7 +22,8 @@
         "typePRODUCTION"
       ],
       "endpointSecurity": [],
-      "tryout": []
+      "tryout": [],
+      "federatedSubscription": []
     }
   }
 }
