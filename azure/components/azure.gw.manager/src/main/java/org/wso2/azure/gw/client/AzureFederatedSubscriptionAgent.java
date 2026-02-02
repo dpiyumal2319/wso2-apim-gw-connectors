@@ -317,10 +317,14 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             // Use the retrieved API path, or fall back to the API name
             String basePath = apiPath != null ? "/" + apiPath : "/" + apiName;
 
-            // Generate curl example with placeholder
-            String curlExample = String.format(
+            // Generate curl examples for both header and query parameter methods
+            String curlExampleHeader = String.format(
                 "curl -X GET \"%s%s" + "\"{path} -H \"%s: {YOUR_SUBSCRIPTION_KEY}\"",
                 baseUrl, basePath, HEADER_NAME);
+
+            String curlExampleQuery = String.format(
+                "curl -X GET \"%s%s" + "\"{path}?%s={YOUR_SUBSCRIPTION_KEY}\"",
+                baseUrl, basePath, QUERY_PARAM_NAME);
 
             // Add notes about alternative query parameter option
             String notes = String.format(
@@ -334,7 +338,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             invBody.addProperty("queryParamName", QUERY_PARAM_NAME);
             invBody.addProperty("baseUrl", baseUrl);
             invBody.addProperty("basePath", basePath);
-            invBody.addProperty("curlExample", curlExample);
+            invBody.addProperty("curlExampleHeader", curlExampleHeader);
+            invBody.addProperty("curlExampleQuery", curlExampleQuery);
             invBody.addProperty("notes", notes);
 
             // Build and return the invocation instruction with opaque body
