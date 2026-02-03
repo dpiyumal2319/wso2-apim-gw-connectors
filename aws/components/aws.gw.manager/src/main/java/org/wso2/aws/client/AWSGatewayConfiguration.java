@@ -65,6 +65,14 @@ public class AWSGatewayConfiguration implements GatewayAgentConfiguration {
         return AWSFederatedAPIDiscovery.class.getName();
     }
 
+    /**
+     * Returns subscription agent class name for federated subscriptions
+     */
+    @Override
+    public String getSubscriptionAgentImplementation() {
+        return AWSFederatedSubscriptionAgent.class.getName();
+    }
+
     @Override
     public List<ConfigurationDto> getConnectionConfigurations() {
         List<ConfigurationDto> configurationDtoList = new ArrayList<>();
