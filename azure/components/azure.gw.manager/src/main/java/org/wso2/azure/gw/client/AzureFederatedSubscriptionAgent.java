@@ -27,7 +27,6 @@ import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionRequest;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 
 
-import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 
 /**
@@ -217,70 +216,6 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         } catch (Exception e) {
             log.error("Error deleting Azure subscription: " + externalSubscriptionId, e);
             throw new APIManagementException("Failed to delete subscription in Azure APIM: " + e.getMessage(), e);
-        }
-    }
-
-    @Override
-    public FederatedCredential regenerateCredential(String externalSubscriptionId) throws APIManagementException {
-        if (log.isDebugEnabled()) {
-            log.debug("Regenerating credential for Azure subscription: " + externalSubscriptionId);
-        }
-
-        try {
-            // Verify subscription exists
-            SubscriptionContract subscription = manager.subscriptions()
-                    .get(resourceGroup, serviceName, externalSubscriptionId);
-
-            if (subscription == null) {
-                throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
-            }
-
-            // Regenerate the primary key
-            manager.subscriptions()
-                    .regeneratePrimaryKey(resourceGroup, serviceName, externalSubscriptionId);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Primary key regenerated for: " + externalSubscriptionId);
-            }
-
-            // Retrieve the new keys
-            SubscriptionKeysContract keys = manager.subscriptions()
-                    .listSecrets(resourceGroup, serviceName, externalSubscriptionId);
-
-            // Build opaque JSON body containing credential details
-            JsonObject credBody = new JsonObject();
-            credBody.addProperty("credentialType", CREDENTIAL_TYPE);
-            credBody.addProperty("invocationSchema", INVOCATION_SCHEMA);
-            credBody.addProperty("headerName", HEADER_NAME);
-            credBody.addProperty("queryParamName", QUERY_PARAM_NAME);
-
-            if (keys != null && keys.primaryKey() != null && keys.secondaryKey() != null) {
-                credBody.addProperty("primaryKey", keys.primaryKey());
-                credBody.addProperty("secondaryKey", keys.secondaryKey());
-            } else {
-                throw new APIManagementException("Failed to retrieve regenerated keys from Azure");
-            }
-
-            // Set current timestamp
-            credBody.addProperty("createdTime",
-                OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-
-            // Build and return the credential with opaque body
-            FederatedCredential credential = new FederatedCredential();
-            credential.setBody(gson.toJson(credBody));
-            credential.setExternalSubscriptionId(externalSubscriptionId);
-            credential.setValueRetrievable(true);
-            credential.setMasked(false);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Credential regenerated successfully for: " + externalSubscriptionId);
-            }
-
-            return credential;
-
-        } catch (Exception e) {
-            log.error("Error regenerating credential for subscription: " + externalSubscriptionId, e);
-            throw new APIManagementException("Failed to regenerate credential in Azure APIM: " + e.getMessage(), e);
         }
     }
 
