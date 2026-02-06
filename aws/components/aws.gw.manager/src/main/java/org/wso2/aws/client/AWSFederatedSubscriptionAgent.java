@@ -138,7 +138,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             FederatedCredential credential = new FederatedCredential();
             credential.setBody(credBody.toString());
             credential.setExternalSubscriptionId(apiKeyId); // Use Key ID as external ref
-            credential.setValueRetrievable(false); // AWS doesn't allow retrieving value later
+            credential.setValueRetrievable(true); // AWS allows retrieving value later
             credential.setMasked(false);
 
             return credential;
@@ -204,9 +204,43 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     
     @Override
     public FederatedCredential retrieveCredential(String externalSubscriptionId) throws APIManagementException {
-        // AWS secrets are not retrievable after creation (only returns masked).
-        // Return null or masked.
-        return null;
+        if (log.isDebugEnabled()) {
+            log.debug("Retrieving credential for AWS API key: " + externalSubscriptionId);
+        }
+
+        try {
+            GetApiKeyRequest getApiKeyRequest = GetApiKeyRequest.builder()
+                    .apiKey(externalSubscriptionId)
+                    .includeValue(true)
+                    .build();
+            GetApiKeyResponse apiKeyResponse = apiGatewayClient.getApiKey(getApiKeyRequest);
+
+            if (apiKeyResponse == null || apiKeyResponse.value() == null) {
+                throw new APIManagementException("Failed to retrieve API key value from AWS: " + externalSubscriptionId);
+            }
+
+            // Build opaque JSON body containing credential details
+            JsonObject credBody = new JsonObject();
+            credBody.addProperty("credentialType", CREDENTIAL_TYPE);
+            credBody.addProperty("headerName", HEADER_NAME);
+            credBody.addProperty("value", apiKeyResponse.value());
+
+            // Build and return the credential with opaque body
+            FederatedCredential credential = new FederatedCredential();
+            credential.setBody(credBody.toString());
+            credential.setExternalSubscriptionId(externalSubscriptionId);
+            credential.setValueRetrievable(true);
+            credential.setMasked(false);
+
+            if (log.isDebugEnabled()) {
+                log.debug("Credential retrieved successfully for AWS API key: " + externalSubscriptionId);
+            }
+
+            return credential;
+        } catch (Exception e) {
+            log.error("Error retrieving credential for AWS API key: " + externalSubscriptionId, e);
+            throw new APIManagementException("Failed to retrieve credential from AWS: " + e.getMessage(), e);
+        }
     }
 
     @Override
