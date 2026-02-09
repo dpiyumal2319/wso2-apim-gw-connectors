@@ -23,7 +23,7 @@ import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedSubscriptionAgent;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
-import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionRequest;
+import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 
 
@@ -112,19 +112,19 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public FederatedCredential createSubscription(FederatedSubscriptionRequest request) throws APIManagementException {
+    public FederatedCredential createSubscription(FederatedSubscriptionContext context) throws APIManagementException {
         if (log.isDebugEnabled()) {
-            log.debug("Creating Azure subscription for API UUID: " + request.getApiUuid()
-                    + ", Application: " + request.getApplicationUuid());
+            log.debug("Creating Azure subscription for API: " + context.getApiName()
+                    + ", Application: " + context.getApplicationName());
         }
 
         try {
             // Extract Azure API ID from reference artifact
-            String azureApiId = extractAzureApiIdFromReferenceArtifact(request.getReferenceArtifact());
+            String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
 
             // Generate subscription name using WSO2 pattern
-            String subscriptionName = generateSubscriptionName(request);
-            String displayName = generateDisplayName(request);
+            String subscriptionName = generateSubscriptionName(context);
+            String displayName = generateDisplayName(context);
 
             // Build the API scope - Azure subscriptions are scoped to specific APIs
             String apiScope = buildApiScope(azureApiId);
@@ -187,20 +187,21 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             return credential;
 
         } catch (Exception e) {
-            log.error("Error creating Azure subscription for request: " + request.getSubscriptionUuid(), e);
+            log.error("Error creating Azure subscription for: " + context.getSubscriptionUuid(), e);
             throw new APIManagementException("Failed to create subscription in Azure APIM: " + e.getMessage(), e);
         }
     }
 
     @Override
-    public void deleteSubscription(String externalSubscriptionId) throws APIManagementException {
+    public void deleteSubscription(FederatedSubscriptionContext context) throws APIManagementException {
+        String externalSubscriptionId = context.getExternalSubscriptionId();
         if (log.isDebugEnabled()) {
             log.debug("Deleting Azure subscription: " + externalSubscriptionId);
         }
 
         try {
             // Check if subscription exists first (for idempotency)
-            if (!subscriptionExists(externalSubscriptionId)) {
+            if (!subscriptionExists(context)) {
                 log.warn("Subscription does not exist, skipping deletion: " + externalSubscriptionId);
                 return;
             }
@@ -220,14 +221,15 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public InvocationInstruction getInvocationInstruction(String referenceArtifact) throws APIManagementException {
+    public InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context)
+            throws APIManagementException {
         if (log.isDebugEnabled()) {
-            log.debug("Generating invocation instruction from reference artifact");
+            log.debug("Generating invocation instruction for API: " + context.getApiName());
         }
 
         try {
             // Extract Azure API ID from reference artifact, then get the API name
-            String azureApiId = extractAzureApiIdFromReferenceArtifact(referenceArtifact);
+            String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
             String apiName = extractApiNameFromId(azureApiId);
 
             // Try to get the actual API contract to retrieve the correct path
@@ -288,13 +290,14 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             return instruction;
 
         } catch (Exception e) {
-            log.error("Error generating invocation instruction from reference artifact", e);
+            log.error("Error generating invocation instruction for API: " + context.getApiName(), e);
             throw new APIManagementException("Failed to generate invocation instruction: " + e.getMessage(), e);
         }
     }
 
     @Override
-    public FederatedCredential retrieveCredential(String externalSubscriptionId) throws APIManagementException {
+    public FederatedCredential retrieveCredential(FederatedSubscriptionContext context) throws APIManagementException {
+        String externalSubscriptionId = context.getExternalSubscriptionId();
         if (log.isDebugEnabled()) {
             log.debug("Retrieving credential for Azure subscription: " + externalSubscriptionId);
         }
@@ -353,7 +356,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     @Override
     public String buildSubscriptionReferenceArtifact(FederatedCredential credential,
-                                                      InvocationInstruction instruction) {
+                                                      InvocationInstruction instruction,
+                                                      FederatedSubscriptionContext context) {
         JsonObject json = new JsonObject();
 
         if (credential != null && credential.getBody() != null) {
@@ -389,18 +393,22 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             json.add("invocationInstruction", invJson);
         }
 
+        // Azure doesn't have subscription options, context not used
+
         return json.toString();
     }
 
     @Override
-    public FederatedCredential extractCredentialFromReferenceArtifact(String subscriptionReferenceArtifact) {
+    public FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
+        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
         FederatedCredential credential = new FederatedCredential();
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             return credential;
         }
         try {
             JsonObject json = JsonParser.parseString(subscriptionReferenceArtifact).getAsJsonObject();
-            JsonObject credJson = json.has("credential") ? json.getAsJsonObject("credential") : null;
+            JsonObject credJson = json.has("credential")
+                    ? json.getAsJsonObject("credential") : null;
             if (credJson != null) {
                 if (credJson.has("body")) {
                     credential.setBody(credJson.get("body").getAsString());
@@ -418,7 +426,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public boolean subscriptionExists(String externalSubscriptionId) throws APIManagementException {
+    public boolean subscriptionExists(FederatedSubscriptionContext context) throws APIManagementException {
+        String externalSubscriptionId = context.getExternalSubscriptionId();
         try {
             SubscriptionContract subscription = manager.subscriptions()
                     .get(resourceGroup, serviceName, externalSubscriptionId);
@@ -438,14 +447,14 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public String[] getSupportedAuthTypes(String apiReferenceArtifact) throws APIManagementException {
+    public String[] getSupportedAuthTypes(FederatedSubscriptionContext context) throws APIManagementException {
         if (log.isDebugEnabled()) {
-            log.debug("Checking subscription support for API");
+            log.debug("Checking subscription support for API: " + context.getApiName());
         }
 
         try {
             // Extract Azure API ID from reference artifact
-            String azureApiId = extractAzureApiIdFromReferenceArtifact(apiReferenceArtifact);
+            String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
             String apiName = extractApiNameFromId(azureApiId);
 
             // Get API from Azure
@@ -479,21 +488,25 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
      * Generates the subscription name following WSO2 pattern.
      * Pattern: wso2_{org}_{appUuid}_{apiUuid}_{envId}
      *
-     * @param request The subscription request
+     * @param context The subscription request
      * @return The generated subscription name
      */
-    private String generateSubscriptionName(FederatedSubscriptionRequest request) {
-        return "wso2_" + sanitize(request.getSubscriptionUuid());
+    private String generateSubscriptionName(FederatedSubscriptionContext context) {
+        return "wso2_" + sanitize(context.getSubscriptionUuid());
     }
 
     /**
      * Generates a human-readable display name for the subscription.
      *
-     * @param request The subscription request
+     * @param context The subscription context
      * @return The display name
      */
-    private String generateDisplayName(FederatedSubscriptionRequest request) {
-        return String.format("WSO2 Subscription - %s", request.getSubscriptionUuid());
+    private String generateDisplayName(FederatedSubscriptionContext context) {
+        // Use API and Application names if available
+        if (context.getApiName() != null && context.getApplicationName() != null) {
+            return String.format("WSO2: %s -> %s", context.getApplicationName(), context.getApiName());
+        }
+        return String.format("WSO2 Subscription - %s", context.getSubscriptionUuid());
     }
 
     /**
