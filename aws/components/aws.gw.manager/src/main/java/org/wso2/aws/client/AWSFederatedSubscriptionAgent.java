@@ -50,6 +50,10 @@ import software.amazon.awssdk.services.apigateway.model.GetUsagePlansRequest;
 import software.amazon.awssdk.services.apigateway.model.GetUsagePlansResponse;
 import software.amazon.awssdk.services.apigateway.model.ApiStage;
 import software.amazon.awssdk.services.apigateway.model.UsagePlan;
+import software.amazon.awssdk.services.apigateway.model.GetResourcesRequest;
+import software.amazon.awssdk.services.apigateway.model.GetResourcesResponse;
+import software.amazon.awssdk.services.apigateway.model.Resource;
+import software.amazon.awssdk.services.apigateway.model.Method;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -138,8 +142,16 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                 String usagePlanName = "wso2_" + apiUuid;
                 UsagePlan usagePlan = findUsagePlanByName(usagePlanName);
                 if (usagePlan == null) {
+                    // Try to find any usage plan associated with this API
+                    String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+                    List<UsagePlan> availablePlans = findUsagePlansForApi(awsApiId, stage);
+                    if (availablePlans.isEmpty()) {
+                        throw new APIManagementException("No subscription option selected and no usage plans found for this API. " +
+                                "Please ensure the API stage is associated with a usage plan on AWS API Gateway.");
+                    }
                     throw new APIManagementException("No subscription option selected and no previous selection found. " +
-                            "Usage Plan not found: " + usagePlanName);
+                            "Usage Plan not found: " + usagePlanName + ". Available usage plans: " + 
+                            availablePlans.size() + ". Please select a subscription tier when creating the subscription.");
                 }
                 usagePlanId = usagePlan.id();
                 if (log.isDebugEnabled()) {
@@ -245,13 +257,70 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
 
     @Override
     public String[] getSupportedAuthTypes(FederatedSubscriptionContext context) {
-        // In our design, all deployed APIs on AWS via this connector require API Key.
-        // We could check the artifact or query AWS to see if 'apiKeyRequired' is true on methods.
-        // For efficiency, we assume strict mode from our design: Supported.
+        // Check if the AWS API actually requires API keys AND has usage plans
         if (log.isDebugEnabled()) {
-            log.debug("Getting supported auth types for API: " + context.getApiName());
+            log.debug("Checking if API requires API keys: " + context.getApiName());
         }
-        return new String[]{CREDENTIAL_TYPE};
+        
+        try {
+            // Extract AWS API ID from reference artifact
+            String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+            
+            // Get all resources (routes) for this API with embedded methods
+            GetResourcesRequest getResourcesRequest = GetResourcesRequest.builder()
+                    .restApiId(awsApiId)
+                    .embed(List.of("methods"))
+                    .build();
+            
+            GetResourcesResponse resourcesResponse = apiGatewayClient.getResources(getResourcesRequest);
+            
+            // Check if any method has apiKeyRequired = true
+            boolean apiKeyRequired = false;
+            for (Resource resource : resourcesResponse.items()) {
+                if (resource.resourceMethods() != null) {
+                    for (Method method : resource.resourceMethods().values()) {
+                        if (method.apiKeyRequired() != null && method.apiKeyRequired()) {
+                            apiKeyRequired = true;
+                            break;
+                        }
+                    }
+                    if (apiKeyRequired) {
+                        break;
+                    }
+                }
+            }
+            
+            if (!apiKeyRequired) {
+                // No method requires API key
+                if (log.isDebugEnabled()) {
+                    log.debug("API " + context.getApiName() + " does not require API keys");
+                }
+                return new String[]{};
+            }
+            
+            // API key is required, now check if there are any usage plans associated with this API stage
+            List<UsagePlan> usagePlans = findUsagePlansForApi(awsApiId, stage);
+            if (usagePlans.isEmpty()) {
+                // No usage plans available - subscriptions cannot be created
+                if (log.isDebugEnabled()) {
+                    log.debug("API " + context.getApiName() + " requires API keys but has no usage plans associated with stage: " + stage);
+                }
+                return new String[]{};
+            }
+            
+            // API key required and usage plans are available
+            if (log.isDebugEnabled()) {
+                log.debug("API " + context.getApiName() + " requires API keys and has " + usagePlans.size() + " usage plan(s) available");
+            }
+            return new String[]{CREDENTIAL_TYPE};
+            
+        } catch (Exception e) {
+            // On error, fall back to not requiring subscription for safety
+            // (fail-open to avoid blocking legitimate APIs)
+            log.warn("Error checking API key requirement for API: " + context.getApiName() 
+                    + ". Assuming no subscription required.", e);
+            return new String[]{};
+        }
     }
     
     @Override
