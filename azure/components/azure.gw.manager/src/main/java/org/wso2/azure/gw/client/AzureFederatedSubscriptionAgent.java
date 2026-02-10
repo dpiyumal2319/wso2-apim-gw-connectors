@@ -188,6 +188,71 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
+    public FederatedCredential regenerateCredential(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        String externalSubscriptionId = context.getExternalSubscriptionId();
+        
+        if (log.isDebugEnabled()) {
+            log.debug("Regenerating credential for Azure subscription: " + externalSubscriptionId);
+        }
+
+        try {
+            // Verify subscription exists
+            SubscriptionContract subscription = manager.subscriptions()
+                    .get(resourceGroup, serviceName, externalSubscriptionId);
+
+            if (subscription == null) {
+                throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
+            }
+
+            // Regenerate both primary and secondary keys using Azure SDK's built-in methods
+            manager.subscriptions().regeneratePrimaryKey(resourceGroup, serviceName, externalSubscriptionId);
+            manager.subscriptions().regenerateSecondaryKey(resourceGroup, serviceName, externalSubscriptionId);
+
+            if (log.isDebugEnabled()) {
+                log.debug("Keys regenerated successfully for subscription: " + externalSubscriptionId);
+            }
+
+            // Retrieve the new keys
+            SubscriptionKeysContract keys = manager.subscriptions()
+                    .listSecrets(resourceGroup, serviceName, externalSubscriptionId);
+
+            // Build typed credential body
+            String createdTime = subscription.createdDate() != null 
+                ? subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) 
+                : null;
+
+            if (keys == null || keys.primaryKey() == null || keys.secondaryKey() == null) {
+                throw new APIManagementException("Failed to retrieve regenerated subscription keys from Azure");
+            }
+
+            PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
+                HEADER_NAME,
+                QUERY_PARAM_NAME,
+                keys.primaryKey(),
+                keys.secondaryKey(),
+                createdTime
+            );
+
+            FederatedCredential credential = new FederatedCredential();
+            credential.setBody(credBody);
+            credential.setExternalSubscriptionId(externalSubscriptionId);
+            credential.setValueRetrievable(true);
+            credential.setMasked(false);
+
+            if (log.isDebugEnabled()) {
+                log.debug("Credential regenerated successfully for: " + externalSubscriptionId);
+            }
+
+            return credential;
+
+        } catch (Exception e) {
+            log.error("Error regenerating credential for subscription: " + externalSubscriptionId, e);
+            throw new APIManagementException("Failed to regenerate credential in Azure APIM: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
     public void deleteSubscription(FederatedSubscriptionContext context) throws APIManagementException {
         String externalSubscriptionId = context.getExternalSubscriptionId();
         if (log.isDebugEnabled()) {

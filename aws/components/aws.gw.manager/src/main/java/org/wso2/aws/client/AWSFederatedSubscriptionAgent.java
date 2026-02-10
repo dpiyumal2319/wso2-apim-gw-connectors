@@ -123,42 +123,15 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             String apiKeyId = apiKeyResponse.id();
             String apiKeyValue = apiKeyResponse.value();
 
-            // 2. Determine Usage Plan ID
-            String usagePlanId;
-            if (context.getSelectedOption() != null) {
-                // Fresh create - developer selected an option
-                JsonObject selected = JsonParser.parseString(context.getSelectedOption()).getAsJsonObject();
-                usagePlanId = selected.get("id").getAsString();
-                if (log.isDebugEnabled()) {
-                    log.debug("Using selected usage plan: " + usagePlanId);
-                }
-            } else if (context.getSubscriptionReferenceArtifact() != null) {
-                // Regeneration - reuse previous selection
-                usagePlanId = extractUsagePlanIdFromArtifact(context.getSubscriptionReferenceArtifact());
-                if (log.isDebugEnabled()) {
-                    log.debug("Reusing previous usage plan: " + usagePlanId);
-                }
-            } else {
-                // Legacy fallback - use wso2_{apiUUID} naming
-                String apiUuid = context.getApiUuid();
-                String usagePlanName = "wso2_" + apiUuid;
-                UsagePlan usagePlan = findUsagePlanByName(usagePlanName);
-                if (usagePlan == null) {
-                    // Try to find any usage plan associated with this API
-                    String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
-                    List<UsagePlan> availablePlans = findUsagePlansForApi(awsApiId, stage);
-                    if (availablePlans.isEmpty()) {
-                        throw new APIManagementException("No subscription option selected and no usage plans found for this API. " +
-                                "Please ensure the API stage is associated with a usage plan on AWS API Gateway.");
-                    }
-                    throw new APIManagementException("No subscription option selected and no previous selection found. " +
-                            "Usage Plan not found: " + usagePlanName + ". Available usage plans: " + 
-                            availablePlans.size() + ". Please select a subscription tier when creating the subscription.");
-                }
-                usagePlanId = usagePlan.id();
-                if (log.isDebugEnabled()) {
-                    log.debug("Using legacy usage plan: " + usagePlanId);
-                }
+            // 2. Determine Usage Plan ID — selectedOption is required
+            if (context.getSelectedOption() == null) {
+                throw new APIManagementException(
+                        "Subscription option (usage plan) must be selected for AWS APIs");
+            }
+            JsonObject selected = JsonParser.parseString(context.getSelectedOption()).getAsJsonObject();
+            String usagePlanId = selected.get("id").getAsString();
+            if (log.isDebugEnabled()) {
+                log.debug("Using selected usage plan: " + usagePlanId);
             }
 
             // 3. Associate API Key with Usage Plan
@@ -185,11 +158,65 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             return credential;
 
         } catch (Exception e) {
-            // Cleanup on failure? AWS operations are not transactional.
-            // Ideally we should try to delete the created key if association fails.
             log.error("Error creating subscription on AWS for API: " + context.getApiName(), e);
             throw new APIManagementException("Error creating subscription on AWS: " + e.getMessage(), e);
         }
+    }
+
+    @Override
+    public FederatedCredential regenerateCredential(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        // 1. Extract selectedOption from old subscription reference artifact
+        String selectedOption = extractSelectedOptionFromArtifact(context.getSubscriptionReferenceArtifact());
+
+        // 2. Best-effort delete old subscription
+        try {
+            deleteSubscription(context);
+        } catch (APIManagementException e) {
+            log.warn("Failed to delete old subscription during regeneration: " + context.getExternalSubscriptionId()
+                    + ". Proceeding with create.", e);
+        }
+
+        // 3. Build new context with extracted selectedOption and null externalSubscriptionId for creation
+        FederatedSubscriptionContext createContext = FederatedSubscriptionContext.builder()
+                .subscriptionUuid(context.getSubscriptionUuid())
+                .externalSubscriptionId(null)
+                .apiReferenceArtifact(context.getApiReferenceArtifact())
+                .subscriptionReferenceArtifact(null)
+                .selectedOption(selectedOption)
+                .apiName(context.getApiName())
+                .apiVersion(context.getApiVersion())
+                .apiContext(context.getApiContext())
+                .apiUuid(context.getApiUuid())
+                .applicationName(context.getApplicationName())
+                .applicationUuid(context.getApplicationUuid())
+                .subscriberName(context.getSubscriberName())
+                .organizationId(context.getOrganizationId())
+                .environmentId(context.getEnvironmentId())
+                .throttlingPolicy(context.getThrottlingPolicy())
+                .properties(context.getProperties())
+                .build();
+
+        // 4. Create new subscription with extracted option
+        return createSubscription(createContext);
+    }
+
+    /**
+     * Extracts the "selectedOption" JSON string from a subscription reference artifact.
+     */
+    private String extractSelectedOptionFromArtifact(String referenceArtifact) {
+        if (referenceArtifact == null || referenceArtifact.isEmpty()) {
+            return null;
+        }
+        try {
+            JsonObject json = JsonParser.parseString(referenceArtifact).getAsJsonObject();
+            if (json.has("selectedOption")) {
+                return json.get("selectedOption").getAsString();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract selectedOption from reference artifact", e);
+        }
+        return null;
     }
 
     @Override
@@ -428,31 +455,37 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         return credential;
     }
     
-    private UsagePlan findUsagePlanByName(String name) {
-        // AWS doesn't support getUsagePlanByName directly. Need to list/filter.
-        // Pagination caution: If there are many plans, this might be slow using getUsagePlans().
-        // For now, simple implementation.
-        // Verified: Usage Plans list supports limit/position, but not filtering by name serverside?
-        // We might need to iterate.
+    private List<UsagePlan> findUsagePlansForApi(String apiId, String stageName) {
+        List<UsagePlan> matching = new ArrayList<>();
         try {
             String position = null;
             do {
                 GetUsagePlansRequest request = GetUsagePlansRequest.builder()
-                        .limit(500) // Max limit is usually 500
+                        .limit(500)
                         .position(position)
                         .build();
                 GetUsagePlansResponse response = apiGatewayClient.getUsagePlans(request);
+                
                 for (UsagePlan plan : response.items()) {
-                    if (name.equals(plan.name())) {
-                        return plan;
+                    // Check if this plan is associated with our API and stage
+                    if (plan.apiStages() != null) {
+                        for (ApiStage apiStage : plan.apiStages()) {
+                            if (apiId.equals(apiStage.apiId()) && 
+                                (stageName == null || stageName.equals(apiStage.stage()))) {
+                                matching.add(plan);
+                                break;  // Don't add same plan twice
+                            }
+                        }
                     }
                 }
+                
                 position = response.position();
             } while (position != null);
+            
         } catch (Exception e) {
-            log.error("Error finding usage plan: " + name, e);
+            log.error("Error finding usage plans for API: " + apiId, e);
         }
-        return null;
+        return matching;
     }
 
     @Override
@@ -514,52 +547,4 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             throw new APIManagementException("Failed to get subscription options from AWS: " + e.getMessage(), e);
         }
     }
-
-    private List<UsagePlan> findUsagePlansForApi(String apiId, String stageName) {
-        List<UsagePlan> matching = new ArrayList<>();
-        try {
-            String position = null;
-            do {
-                GetUsagePlansRequest request = GetUsagePlansRequest.builder()
-                        .limit(500)
-                        .position(position)
-                        .build();
-                GetUsagePlansResponse response = apiGatewayClient.getUsagePlans(request);
-                
-                for (UsagePlan plan : response.items()) {
-                    // Check if this plan is associated with our API and stage
-                    if (plan.apiStages() != null) {
-                        for (ApiStage apiStage : plan.apiStages()) {
-                            if (apiId.equals(apiStage.apiId()) && 
-                                (stageName == null || stageName.equals(apiStage.stage()))) {
-                                matching.add(plan);
-                                break;  // Don't add same plan twice
-                            }
-                        }
-                    }
-                }
-                
-                position = response.position();
-            } while (position != null);
-            
-        } catch (Exception e) {
-            log.error("Error finding usage plans for API: " + apiId, e);
-        }
-        return matching;
-    }
-
-    private String extractUsagePlanIdFromArtifact(String referenceArtifact) {
-        try {
-            JsonObject json = JsonParser.parseString(referenceArtifact).getAsJsonObject();
-            if (json.has("selectedOption")) {
-                JsonObject selected = JsonParser.parseString(json.get("selectedOption").getAsString())
-                        .getAsJsonObject();
-                return selected.get("id").getAsString();
-            }
-        } catch (Exception e) {
-            log.warn("Failed to extract usage plan ID from reference artifact", e);
-        }
-        return null;
-    }
 }
-
