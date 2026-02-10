@@ -18,13 +18,15 @@
 
 package org.wso2.aws.client;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
+import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderBasedInvocation;
+import org.wso2.carbon.apimgt.api.model.schema.options.TierSelectorOptions;
 import org.wso2.aws.client.util.GatewayUtil;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedSubscriptionAgent;
@@ -167,16 +169,13 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                     .build();
             apiGatewayClient.createUsagePlanKey(planKeyRequest);
 
-            // 4. Return Credential
-            JsonObject credBody = new JsonObject();
-            credBody.addProperty("credentialType", CREDENTIAL_TYPE);
-            credBody.addProperty("headerName", HEADER_NAME);
-            credBody.addProperty("value", apiKeyValue);
+            // 4. Return Credential with typed body
+            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(HEADER_NAME, apiKeyValue);
 
             FederatedCredential credential = new FederatedCredential();
-            credential.setBody(credBody.toString());
-            credential.setExternalSubscriptionId(apiKeyId); // Use Key ID as external ref
-            credential.setValueRetrievable(true); // AWS allows retrieving value later
+            credential.setBody(credBody);
+            credential.setExternalSubscriptionId(apiKeyId);
+            credential.setValueRetrievable(true);
             credential.setMasked(false);
 
             if (log.isDebugEnabled()) {
@@ -222,10 +221,6 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
 
     @Override
     public InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context) {
-        JsonObject invBody = new JsonObject();
-        invBody.addProperty("invocationSchema", "header-based");
-        invBody.addProperty("headerName", HEADER_NAME);
-        
         // Extract AWS API ID from reference artifact and build real execution URL
         String baseUrl = "https://{api-url}";
         String basePath = "/{stage}";
@@ -246,12 +241,10 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                     context.getApiName() + ", using placeholder URL", e);
         }
         
-        invBody.addProperty("baseUrl", baseUrl);
-        invBody.addProperty("basePath", basePath);
-        invBody.addProperty("curlExampleHeader", curlExampleHeader);
+        HeaderBasedInvocation invBody = new HeaderBasedInvocation(HEADER_NAME, baseUrl, basePath, curlExampleHeader);
 
         InvocationInstruction instruction = new InvocationInstruction();
-        instruction.setBody(invBody.toString());
+        instruction.setBody(invBody);
         return instruction;
     }
 
@@ -344,15 +337,10 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                 throw new APIManagementException("Failed to retrieve API key value from AWS: " + externalSubscriptionId);
             }
 
-            // Build opaque JSON body containing credential details
-            JsonObject credBody = new JsonObject();
-            credBody.addProperty("credentialType", CREDENTIAL_TYPE);
-            credBody.addProperty("headerName", HEADER_NAME);
-            credBody.addProperty("value", apiKeyResponse.value());
+            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(HEADER_NAME, apiKeyResponse.value());
 
-            // Build and return the credential with opaque body
             FederatedCredential credential = new FederatedCredential();
-            credential.setBody(credBody.toString());
+            credential.setBody(credBody);
             credential.setExternalSubscriptionId(externalSubscriptionId);
             credential.setValueRetrievable(true);
             credential.setMasked(false);
@@ -376,29 +364,24 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         JsonObject json = new JsonObject();
 
         if (credential != null && credential.getBody() != null) {
-            // Parse credential body to mask the keys
             try {
-                JsonObject credBody = JsonParser.parseString(credential.getBody()).getAsJsonObject();
+                OpaqueApiKeyCredential maskedCredBody =
+                        (OpaqueApiKeyCredential) credential.getBody().masked();
 
-                // Mask value if present
-                if (credBody.has("value")) {
-                    String originalValue = credBody.get("value").getAsString();
-                    credBody.addProperty("value", maskCredential(originalValue));
-                }
-
-                // Build masked credential body
                 JsonObject maskedCred = new JsonObject();
-                maskedCred.addProperty("body", new Gson().toJson(credBody));
+                maskedCred.addProperty("schemaName", maskedCredBody.getSchemaName());
+                maskedCred.addProperty("body", maskedCredBody.toJson());
                 maskedCred.addProperty("isValueRetrievable", credential.isValueRetrievable());
                 json.add("credential", maskedCred);
             } catch (Exception e) {
-                log.warn("Failed to parse credential body for masking", e);
+                log.warn("Failed to mask credential body", e);
             }
         }
 
         if (instruction != null && instruction.getBody() != null) {
             JsonObject invJson = new JsonObject();
-            invJson.addProperty("body", instruction.getBody());
+            invJson.addProperty("schemaName", instruction.getSchemaName());
+            invJson.addProperty("body", instruction.getBodyAsJson());
             json.add("invocationInstruction", invJson);
         }
 
@@ -414,7 +397,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     public FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
         FederatedCredential credential = new FederatedCredential();
         String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
-        
+
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             if (log.isDebugEnabled()) {
                 log.debug("No subscription reference artifact found for API: " + context.getApiName());
@@ -426,14 +409,15 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             JsonObject credJson = json.has("credential") ? json.getAsJsonObject("credential") : null;
             if (credJson != null) {
                 if (credJson.has("body")) {
-                    credential.setBody(credJson.get("body").getAsString());
+                    String bodyJson = credJson.get("body").getAsString();
+                    OpaqueApiKeyCredential credBody = OpaqueApiKeyCredential.fromJson(bodyJson);
+                    credential.setBody(credBody);
                 }
                 if (credJson.has("isValueRetrievable")) {
                     credential.setValueRetrievable(credJson.get("isValueRetrievable").getAsBoolean());
                 }
-                // Mark as masked since this comes from reference artifact
                 credential.setMasked(true);
-                
+
                 if (log.isDebugEnabled()) {
                     log.debug("Extracted credential from reference artifact for API: " + context.getApiName());
                 }
@@ -442,19 +426,6 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             log.warn("Failed to parse subscription reference artifact for API: " + context.getApiName(), e);
         }
         return credential;
-    }
-
-    private String maskCredential(String credentialValue) {
-        if (credentialValue == null || credentialValue.isEmpty()) {
-            return credentialValue;
-        }
-        int length = credentialValue.length();
-        int visibleChars = 4;
-        if (length <= visibleChars) {
-            return "•".repeat(length);
-        }
-        int maskLength = Math.min(8, length - visibleChars);
-        return "•".repeat(maskLength) + credentialValue.substring(length - visibleChars);
     }
     
     private UsagePlan findUsagePlanByName(String name) {
@@ -527,9 +498,10 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             body.add("options", options);
             body.addProperty("optionsType", "usage-plan");
 
+            TierSelectorOptions optionsBody = new TierSelectorOptions(body.toString());
+
             FederatedSubscriptionOptions result = new FederatedSubscriptionOptions();
-            result.setBody(body.toString());
-            result.setOptionsSchema("tier-selector");
+            result.setBody(optionsBody);
             
             if (log.isDebugEnabled()) {
                 log.debug("Found " + matchingPlans.size() + " usage plan options for API: " + awsApiId);

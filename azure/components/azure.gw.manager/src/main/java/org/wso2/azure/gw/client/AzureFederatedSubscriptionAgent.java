@@ -13,7 +13,6 @@ import com.azure.resourcemanager.apimanagement.models.SubscriptionContract;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionCreateParameters;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionKeysContract;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionState;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
@@ -25,6 +24,8 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
+import org.wso2.carbon.apimgt.api.model.schema.credential.PrimarySecondaryKeyPairCredential;
+import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderWithQueryFallbackInvocation;
 
 
 import java.time.format.DateTimeFormatter;
@@ -60,7 +61,6 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     private String serviceName;
     private String hostname;
     private ApiManagementManager manager;
-    private Gson gson = new Gson();
 
     @Override
     public void init(Environment environment, String organization) throws APIManagementException {
@@ -152,30 +152,25 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             SubscriptionKeysContract keys = manager.subscriptions()
                     .listSecrets(resourceGroup, serviceName, subscription.name());
 
-            // Build opaque JSON body containing credential details
-            JsonObject credBody = new JsonObject();
-            credBody.addProperty("credentialType", CREDENTIAL_TYPE);
-            credBody.addProperty("invocationSchema", INVOCATION_SCHEMA);
-            credBody.addProperty("headerName", HEADER_NAME);
-            credBody.addProperty("queryParamName", QUERY_PARAM_NAME);
-
-            // Return both primary and secondary keys
-            if (keys != null && keys.primaryKey() != null && keys.secondaryKey() != null) {
-                credBody.addProperty("primaryKey", keys.primaryKey());
-                credBody.addProperty("secondaryKey", keys.secondaryKey());
-            } else {
+            // Build typed credential body (schema name on envelope, not in body)
+            String createdTime = subscription.createdDate() != null 
+                ? subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) 
+                : null;
+            
+            if (keys == null || keys.primaryKey() == null || keys.secondaryKey() == null) {
                 throw new APIManagementException("Failed to retrieve subscription keys from Azure");
             }
 
-            // Set timestamps
-            if (subscription.createdDate() != null) {
-                credBody.addProperty("createdTime",
-                    subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-            }
+            PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
+                HEADER_NAME,
+                QUERY_PARAM_NAME,
+                keys.primaryKey(),
+                keys.secondaryKey(),
+                createdTime
+            );
 
-            // Build and return the credential with opaque body
             FederatedCredential credential = new FederatedCredential();
-            credential.setBody(gson.toJson(credBody));
+            credential.setBody(credBody);
             credential.setExternalSubscriptionId(subscription.name());
             credential.setValueRetrievable(true);
             credential.setMasked(false);
@@ -268,20 +263,18 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
                     "You can pass the subscription key either in the '%s' header or as a '%s' query parameter.",
                     HEADER_NAME, QUERY_PARAM_NAME);
 
-            // Build opaque JSON body containing invocation details
-            JsonObject invBody = new JsonObject();
-            invBody.addProperty("invocationSchema", INVOCATION_SCHEMA);
-            invBody.addProperty("headerName", HEADER_NAME);
-            invBody.addProperty("queryParamName", QUERY_PARAM_NAME);
-            invBody.addProperty("baseUrl", baseUrl);
-            invBody.addProperty("basePath", basePath);
-            invBody.addProperty("curlExampleHeader", curlExampleHeader);
-            invBody.addProperty("curlExampleQuery", curlExampleQuery);
-            invBody.addProperty("notes", notes);
+            HeaderWithQueryFallbackInvocation invBody = new HeaderWithQueryFallbackInvocation(
+                HEADER_NAME,
+                QUERY_PARAM_NAME,
+                baseUrl,
+                basePath,
+                curlExampleHeader,
+                curlExampleQuery,
+                notes
+            );
 
-            // Build and return the invocation instruction with opaque body
             InvocationInstruction instruction = new InvocationInstruction();
-            instruction.setBody(gson.toJson(invBody));
+            instruction.setBody(invBody);
 
             if (log.isDebugEnabled()) {
                 log.debug("Invocation instruction generated for API: " + apiName + " with path: " + basePath);
@@ -315,29 +308,25 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             SubscriptionKeysContract keys = manager.subscriptions()
                     .listSecrets(resourceGroup, serviceName, externalSubscriptionId);
 
-            // Build opaque JSON body containing credential details
-            JsonObject credBody = new JsonObject();
-            credBody.addProperty("credentialType", CREDENTIAL_TYPE);
-            credBody.addProperty("invocationSchema", INVOCATION_SCHEMA);
-            credBody.addProperty("headerName", HEADER_NAME);
-            credBody.addProperty("queryParamName", QUERY_PARAM_NAME);
+            // Build typed credential body (schema name on envelope, not in body)
+            String createdTime = subscription.createdDate() != null 
+                ? subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) 
+                : null;
 
-            if (keys != null && keys.primaryKey() != null && keys.secondaryKey() != null) {
-                credBody.addProperty("primaryKey", keys.primaryKey());
-                credBody.addProperty("secondaryKey", keys.secondaryKey());
-            } else {
+            if (keys == null || keys.primaryKey() == null || keys.secondaryKey() == null) {
                 throw new APIManagementException("Failed to retrieve subscription keys from Azure");
             }
 
-            // Set timestamps
-            if (subscription.createdDate() != null) {
-                credBody.addProperty("createdTime",
-                    subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-            }
+            PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
+                HEADER_NAME,
+                QUERY_PARAM_NAME,
+                keys.primaryKey(),
+                keys.secondaryKey(),
+                createdTime
+            );
 
-            // Build and return the credential with opaque body
             FederatedCredential credential = new FederatedCredential();
-            credential.setBody(gson.toJson(credBody));
+            credential.setBody(credBody);
             credential.setExternalSubscriptionId(externalSubscriptionId);
             credential.setValueRetrievable(true);
             credential.setMasked(false);
@@ -361,39 +350,26 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         JsonObject json = new JsonObject();
 
         if (credential != null && credential.getBody() != null) {
-            // Parse credential body to mask the keys
             try {
-                JsonObject credBody = JsonParser.parseString(credential.getBody()).getAsJsonObject();
+                PrimarySecondaryKeyPairCredential maskedCredBody =
+                        (PrimarySecondaryKeyPairCredential) credential.getBody().masked();
 
-                // Mask primary key if present
-                if (credBody.has("primaryKey")) {
-                    String originalPrimaryKey = credBody.get("primaryKey").getAsString();
-                    credBody.addProperty("primaryKey", maskCredential(originalPrimaryKey));
-                }
-
-                // Mask secondary key if present
-                if (credBody.has("secondaryKey")) {
-                    String originalSecondaryKey = credBody.get("secondaryKey").getAsString();
-                    credBody.addProperty("secondaryKey", maskCredential(originalSecondaryKey));
-                }
-
-                // Build masked credential body
                 JsonObject maskedCred = new JsonObject();
-                maskedCred.addProperty("body", gson.toJson(credBody));
+                maskedCred.addProperty("schemaName", maskedCredBody.getSchemaName());
+                maskedCred.addProperty("body", maskedCredBody.toJson());
                 maskedCred.addProperty("isValueRetrievable", credential.isValueRetrievable());
                 json.add("credential", maskedCred);
-            } catch (JsonSyntaxException e) {
-                log.warn("Failed to parse credential body for masking", e);
+            } catch (Exception e) {
+                log.warn("Failed to mask credential body", e);
             }
         }
 
         if (instruction != null && instruction.getBody() != null) {
             JsonObject invJson = new JsonObject();
-            invJson.addProperty("body", instruction.getBody());
+            invJson.addProperty("schemaName", instruction.getSchemaName());
+            invJson.addProperty("body", instruction.getBodyAsJson());
             json.add("invocationInstruction", invJson);
         }
-
-        // Azure doesn't have subscription options, context not used
 
         return json.toString();
     }
@@ -411,12 +387,14 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
                     ? json.getAsJsonObject("credential") : null;
             if (credJson != null) {
                 if (credJson.has("body")) {
-                    credential.setBody(credJson.get("body").getAsString());
+                    String bodyJson = credJson.get("body").getAsString();
+                    PrimarySecondaryKeyPairCredential credBody =
+                            PrimarySecondaryKeyPairCredential.fromJson(bodyJson);
+                    credential.setBody(credBody);
                 }
                 if (credJson.has("isValueRetrievable")) {
                     credential.setValueRetrievable(credJson.get("isValueRetrievable").getAsBoolean());
                 }
-                // Mark as masked since this comes from reference artifact
                 credential.setMasked(true);
             }
         } catch (JsonSyntaxException e) {
