@@ -39,7 +39,12 @@
         "basicAuth"
       ],
       "tryout": [],
-      "federatedSubscription": []
+      "federatedSubscription": [
+        {
+          "credentialSchema": "opaque-api-key",
+          "invocationSchema": "header-based"
+        }
+      ]
     }
   }
 }

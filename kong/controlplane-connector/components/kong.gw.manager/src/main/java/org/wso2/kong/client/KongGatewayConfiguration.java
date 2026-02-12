@@ -64,6 +64,11 @@ public class KongGatewayConfiguration implements GatewayAgentConfiguration {
     }
 
     @Override
+    public String getSubscriptionAgentImplementation() {
+        return KongFederatedSubscriptionAgent.class.getName();
+    }
+
+    @Override
     public List<ConfigurationDto> getConnectionConfigurations() {
 
         List<ConfigurationDto> standaloneConfigValues = new ArrayList<>();
@@ -76,6 +81,9 @@ public class KongGatewayConfiguration implements GatewayAgentConfiguration {
                         "Control Plane ID", "", true, true, Collections.emptyList(), false));
         standaloneConfigValues.add(new ConfigurationDto(KongConstants.KONG_AUTH_TOKEN, "Access Token", "input",
                 "Access Token for Authentication", "", true, true, Collections.emptyList(), false));
+        standaloneConfigValues.add(new ConfigurationDto(KongConstants.KONG_PROXY_URL, "Proxy URL", "input",
+                "Proxy URL for API invocation (optional, defaults to VHost)", "", false, false,
+                Collections.emptyList(), false));
 
         List<ConfigurationDto> deploymentValues = new ArrayList<>();
 

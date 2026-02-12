@@ -35,6 +35,8 @@ public class KongConstants {
     public static final String KONG_CORS_PLUGIN_TYPE = "cors";
     public static final String KONG_RATELIMIT_ADVANCED_PLUGIN_TYPE = "rate-limiting-advanced";
     public static final String KONG_RATELIMIT_PLUGIN_TYPE = "rate-limiting";
+    public static final String KONG_KEY_AUTH_PLUGIN_TYPE = "key-auth";
+    public static final String KONG_ACL_PLUGIN_TYPE = "acl";
 
     // Commonly used default values and headers
     public static final String AUTHORIZATION_HEADER = "Authorization";
@@ -48,4 +50,9 @@ public class KongConstants {
     public static final String DEFAULT_TIER = "Unlimited";
     public static final String DEFAULT_GATEWAY_VENDOR = "external";
     public static final String DEFAULT_VHOST = "example.com";
+
+    // Subscription constants
+    public static final String DEFAULT_KEY_AUTH_HEADER = "apikey";
+    public static final String KONG_PROXY_URL = "proxy_url";
+    public static final String CONSUMER_NAME_PREFIX = "wso2_";
 }
