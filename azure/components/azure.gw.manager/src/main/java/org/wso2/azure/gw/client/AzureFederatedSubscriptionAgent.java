@@ -20,6 +20,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedSubscriptionAgent;
+import org.wso2.carbon.apimgt.api.model.AgentOperationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
@@ -112,7 +113,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public FederatedCredential createSubscription(FederatedSubscriptionContext context) throws APIManagementException {
+    public AgentOperationResult createSubscription(FederatedSubscriptionContext context, String selectedOption)
+            throws APIManagementException {
         if (log.isDebugEnabled()) {
             log.debug("Creating Azure subscription for API: " + context.getApiName()
                     + ", Application: " + context.getApplicationName());
@@ -175,11 +177,20 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
+            // Build invocation instruction and reference artifact
+            InvocationInstruction instruction = getInvocationInstruction(context);
+            String referenceArtifact = buildReferenceArtifact(credential, instruction);
+
             if (log.isDebugEnabled()) {
                 log.debug("Subscription credential created successfully for: " + subscriptionName);
             }
 
-            return credential;
+            return AgentOperationResult.builder()
+                    .credential(credential)
+                    .instruction(instruction)
+                    .referenceArtifact(referenceArtifact)
+                    .externalSubscriptionId(subscription.name())
+                    .build();
 
         } catch (Exception e) {
             log.error("Error creating Azure subscription for: " + context.getSubscriptionUuid(), e);
@@ -188,7 +199,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public FederatedCredential regenerateCredential(FederatedSubscriptionContext context)
+    public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
             throws APIManagementException {
         String externalSubscriptionId = context.getExternalSubscriptionId();
         
@@ -240,11 +251,20 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
+            // Build invocation instruction and reference artifact
+            InvocationInstruction instruction = getInvocationInstruction(context);
+            String referenceArtifact = buildReferenceArtifact(credential, instruction);
+
             if (log.isDebugEnabled()) {
                 log.debug("Credential regenerated successfully for: " + externalSubscriptionId);
             }
 
-            return credential;
+            return AgentOperationResult.builder()
+                    .credential(credential)
+                    .instruction(instruction)
+                    .referenceArtifact(referenceArtifact)
+                    .externalSubscriptionId(externalSubscriptionId)
+                    .build();
 
         } catch (Exception e) {
             log.error("Error regenerating credential for subscription: " + externalSubscriptionId, e);
@@ -280,8 +300,10 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         }
     }
 
-    @Override
-    public InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context)
+    /**
+     * Generates invocation instruction for the Azure API.
+     */
+    private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context)
             throws APIManagementException {
         if (log.isDebugEnabled()) {
             log.debug("Generating invocation instruction for API: " + context.getApiName());
@@ -354,7 +376,36 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public FederatedCredential retrieveCredential(FederatedSubscriptionContext context) throws APIManagementException {
+    public AgentOperationResult retrieveSubscription(FederatedSubscriptionContext context,
+            boolean includeFullCredentials) throws APIManagementException {
+
+        FederatedCredential credential;
+        if (includeFullCredentials) {
+            // First verify gateway supports retrieval
+            FederatedCredential maskedCred = extractCredentialFromReferenceArtifact(context);
+            if (maskedCred == null || !maskedCred.isValueRetrievable()) {
+                throw new APIManagementException("This gateway does not support credential retrieval");
+            }
+            credential = retrieveFullCredential(context);
+        } else {
+            credential = extractCredentialFromReferenceArtifact(context);
+            credential.setExternalSubscriptionId(context.getExternalSubscriptionId());
+            credential.setMasked(true);
+        }
+
+        InvocationInstruction instruction = getInvocationInstruction(context);
+
+        return AgentOperationResult.builder()
+                .credential(credential)
+                .instruction(instruction)
+                .build();
+    }
+
+    /**
+     * Retrieves the full credential value from Azure APIM.
+     */
+    private FederatedCredential retrieveFullCredential(FederatedSubscriptionContext context)
+            throws APIManagementException {
         String externalSubscriptionId = context.getExternalSubscriptionId();
         if (log.isDebugEnabled()) {
             log.debug("Retrieving credential for Azure subscription: " + externalSubscriptionId);
@@ -408,10 +459,11 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         }
     }
 
-    @Override
-    public String buildSubscriptionReferenceArtifact(FederatedCredential credential,
-                                                      InvocationInstruction instruction,
-                                                      FederatedSubscriptionContext context) {
+    /**
+     * Builds the reference artifact JSON for storage. Agent-internal.
+     */
+    private String buildReferenceArtifact(FederatedCredential credential,
+                                           InvocationInstruction instruction) {
         JsonObject json = new JsonObject();
 
         if (credential != null && credential.getBody() != null) {
@@ -439,8 +491,10 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         return json.toString();
     }
 
-    @Override
-    public FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
+    /**
+     * Extracts masked credential from the stored reference artifact.
+     */
+    private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
         String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
         FederatedCredential credential = new FederatedCredential();
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {

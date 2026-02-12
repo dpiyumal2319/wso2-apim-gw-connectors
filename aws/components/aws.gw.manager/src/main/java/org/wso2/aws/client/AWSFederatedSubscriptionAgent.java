@@ -18,7 +18,6 @@
 
 package org.wso2.aws.client;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.lang3.StringUtils;
@@ -26,10 +25,11 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderBasedInvocation;
-import org.wso2.carbon.apimgt.api.model.schema.options.TierSelectorOptions;
+import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
 import org.wso2.aws.client.util.GatewayUtil;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedSubscriptionAgent;
+import org.wso2.carbon.apimgt.api.model.AgentOperationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
@@ -102,7 +102,8 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     }
 
     @Override
-    public FederatedCredential createSubscription(FederatedSubscriptionContext context) throws APIManagementException {
+    public AgentOperationResult createSubscription(FederatedSubscriptionContext context, String selectedOption)
+            throws APIManagementException {
         try {
             String subUuid = context.getSubscriptionUuid();
             String apiKeyName = "wso2_" + subUuid;
@@ -113,7 +114,19 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                         ", Subscription: " + subUuid);
             }
 
-            // 1. Create API Key
+            // 1. Determine Usage Plan ID — selectedOption is required
+            if (StringUtils.isEmpty(selectedOption)) {
+                throw new APIManagementException(
+                        "Subscription option (usage plan) must be selected for AWS APIs");
+            }
+
+            JsonObject selected = JsonParser.parseString(selectedOption).getAsJsonObject();
+            String usagePlanId = selected.get("id").getAsString();
+            if (log.isDebugEnabled()) {
+                log.debug("Using selected usage plan: " + usagePlanId);
+            }
+
+            // 2. Create API Key
             CreateApiKeyRequest createApiKeyRequest = CreateApiKeyRequest.builder()
                     .name(apiKeyName)
                     .enabled(true)
@@ -123,16 +136,6 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             String apiKeyId = apiKeyResponse.id();
             String apiKeyValue = apiKeyResponse.value();
 
-            // 2. Determine Usage Plan ID — selectedOption is required
-            if (context.getSelectedOption() == null) {
-                throw new APIManagementException(
-                        "Subscription option (usage plan) must be selected for AWS APIs");
-            }
-            JsonObject selected = JsonParser.parseString(context.getSelectedOption()).getAsJsonObject();
-            String usagePlanId = selected.get("id").getAsString();
-            if (log.isDebugEnabled()) {
-                log.debug("Using selected usage plan: " + usagePlanId);
-            }
 
             // 3. Associate API Key with Usage Plan
             CreateUsagePlanKeyRequest planKeyRequest = CreateUsagePlanKeyRequest.builder()
@@ -142,20 +145,30 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                     .build();
             apiGatewayClient.createUsagePlanKey(planKeyRequest);
 
-            // 4. Return Credential with typed body
+            // 4. Build credential
             OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(HEADER_NAME, apiKeyValue);
-
             FederatedCredential credential = new FederatedCredential();
             credential.setBody(credBody);
             credential.setExternalSubscriptionId(apiKeyId);
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
+            // 5. Build invocation instruction
+            InvocationInstruction instruction = getInvocationInstruction(context);
+
+            // 6. Build reference artifact (agent-owned, stores selectedOption internally)
+            String referenceArtifact = buildReferenceArtifact(credential, instruction, selectedOption);
+
             if (log.isDebugEnabled()) {
                 log.debug("Successfully created AWS subscription for API: " + context.getApiName());
             }
 
-            return credential;
+            return AgentOperationResult.builder()
+                    .credential(credential)
+                    .instruction(instruction)
+                    .referenceArtifact(referenceArtifact)
+                    .externalSubscriptionId(apiKeyId)
+                    .build();
 
         } catch (Exception e) {
             log.error("Error creating subscription on AWS for API: " + context.getApiName(), e);
@@ -164,9 +177,9 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     }
 
     @Override
-    public FederatedCredential regenerateCredential(FederatedSubscriptionContext context)
+    public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
             throws APIManagementException {
-        // 1. Extract selectedOption from old subscription reference artifact
+        // 1. Extract selectedOption from old reference artifact (agent's own format)
         String selectedOption = extractSelectedOptionFromArtifact(context.getSubscriptionReferenceArtifact());
 
         // 2. Best-effort delete old subscription
@@ -177,28 +190,12 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                     + ". Proceeding with create.", e);
         }
 
-        // 3. Build new context with extracted selectedOption and null externalSubscriptionId for creation
-        FederatedSubscriptionContext createContext = FederatedSubscriptionContext.builder()
-                .subscriptionUuid(context.getSubscriptionUuid())
+        // 3. Create new subscription with preserved option
+        FederatedSubscriptionContext createCtx = context.toBuilder()
                 .externalSubscriptionId(null)
-                .apiReferenceArtifact(context.getApiReferenceArtifact())
                 .subscriptionReferenceArtifact(null)
-                .selectedOption(selectedOption)
-                .apiName(context.getApiName())
-                .apiVersion(context.getApiVersion())
-                .apiContext(context.getApiContext())
-                .apiUuid(context.getApiUuid())
-                .applicationName(context.getApplicationName())
-                .applicationUuid(context.getApplicationUuid())
-                .subscriberName(context.getSubscriberName())
-                .organizationId(context.getOrganizationId())
-                .environmentId(context.getEnvironmentId())
-                .throttlingPolicy(context.getThrottlingPolicy())
-                .properties(context.getProperties())
                 .build();
-
-        // 4. Create new subscription with extracted option
-        return createSubscription(createContext);
+        return createSubscription(createCtx, selectedOption);
     }
 
     /**
@@ -246,8 +243,10 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         }
     }
 
-    @Override
-    public InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context) {
+    /**
+     * Generates invocation instruction for the AWS API.
+     */
+    private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context) {
         // Extract AWS API ID from reference artifact and build real execution URL
         String baseUrl = "https://{api-url}";
         String basePath = "/{stage}";
@@ -318,25 +317,13 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                 return new String[]{};
             }
             
-            // API key is required, now check if there are any usage plans associated with this API stage
-            List<UsagePlan> usagePlans = findUsagePlansForApi(awsApiId, stage);
-            if (usagePlans.isEmpty()) {
-                // No usage plans available - subscriptions cannot be created
-                if (log.isDebugEnabled()) {
-                    log.debug("API " + context.getApiName() + " requires API keys but has no usage plans associated with stage: " + stage);
-                }
-                return new String[]{};
-            }
-            
             // API key required and usage plans are available
             if (log.isDebugEnabled()) {
-                log.debug("API " + context.getApiName() + " requires API keys and has " + usagePlans.size() + " usage plan(s) available");
+                log.debug("API " + context.getApiName() + " requires API keys");
             }
             return new String[]{CREDENTIAL_TYPE};
             
         } catch (Exception e) {
-            // On error, fall back to not requiring subscription for safety
-            // (fail-open to avoid blocking legitimate APIs)
             log.warn("Error checking API key requirement for API: " + context.getApiName() 
                     + ". Assuming no subscription required.", e);
             return new String[]{};
@@ -344,7 +331,36 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     }
     
     @Override
-    public FederatedCredential retrieveCredential(FederatedSubscriptionContext context) throws APIManagementException {
+    public AgentOperationResult retrieveSubscription(FederatedSubscriptionContext context,
+            boolean includeFullCredentials) throws APIManagementException {
+
+        FederatedCredential credential;
+        if (includeFullCredentials) {
+            // First verify gateway supports retrieval
+            FederatedCredential maskedCred = extractCredentialFromReferenceArtifact(context);
+            if (maskedCred == null || !maskedCred.isValueRetrievable()) {
+                throw new APIManagementException("This gateway does not support credential retrieval");
+            }
+            credential = retrieveFullCredential(context);
+        } else {
+            credential = extractCredentialFromReferenceArtifact(context);
+            credential.setExternalSubscriptionId(context.getExternalSubscriptionId());
+            credential.setMasked(true);
+        }
+
+        InvocationInstruction instruction = getInvocationInstruction(context);
+
+        return AgentOperationResult.builder()
+                .credential(credential)
+                .instruction(instruction)
+                .build();
+    }
+
+    /**
+     * Retrieves the full credential value from AWS API Gateway.
+     */
+    private FederatedCredential retrieveFullCredential(FederatedSubscriptionContext context)
+            throws APIManagementException {
         String externalSubscriptionId = context.getExternalSubscriptionId();
         
         if (log.isDebugEnabled()) {
@@ -384,10 +400,13 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         }
     }
 
-    @Override
-    public String buildSubscriptionReferenceArtifact(FederatedCredential credential,
-                                                      InvocationInstruction instruction,
-                                                      FederatedSubscriptionContext context) {
+    /**
+     * Builds the reference artifact JSON for storage. Agent-internal — stores
+     * selectedOption so it can be extracted on regeneration.
+     */
+    private String buildReferenceArtifact(FederatedCredential credential,
+                                           InvocationInstruction instruction,
+                                           String selectedOption) {
         JsonObject json = new JsonObject();
 
         if (credential != null && credential.getBody() != null) {
@@ -412,16 +431,17 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             json.add("invocationInstruction", invJson);
         }
 
-        // Store selected option for regeneration
-        if (context != null && context.getSelectedOption() != null) {
-            json.addProperty("selectedOption", context.getSelectedOption());
+        if (selectedOption != null) {
+            json.addProperty("selectedOption", selectedOption);
         }
 
         return json.toString();
     }
 
-    @Override
-    public FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
+    /**
+     * Extracts masked credential from the stored reference artifact.
+     */
+    private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
         FederatedCredential credential = new FederatedCredential();
         String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
 
@@ -504,34 +524,40 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                 return null;  // No options available
             }
 
-            // Build opaque options body
-            JsonArray options = new JsonArray();
+            // Build typed subscription plans
+            List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> subscriptionPlans = new ArrayList<>();
             for (UsagePlan plan : matchingPlans) {
-                JsonObject opt = new JsonObject();
-                opt.addProperty("id", plan.id());
-                opt.addProperty("name", plan.name());
-                opt.addProperty("description", plan.description() != null ? plan.description() : "");
+                org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan subscriptionPlan = 
+                        new org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan(
+                            plan.id(),
+                            plan.name(),
+                            plan.description() != null ? plan.description() : ""
+                        );
                 
-                // Include throttle info for display
+                // Include throttle info in limits map
                 if (plan.throttle() != null) {
-                    opt.addProperty("rateLimit", plan.throttle().rateLimit());
-                    opt.addProperty("burstLimit", plan.throttle().burstLimit());
+                    if (plan.throttle().rateLimit() != null) {
+                        subscriptionPlan.addLimit("rateLimit", String.valueOf(plan.throttle().rateLimit()));
+                    }
+                    if (plan.throttle().burstLimit() != null) {
+                        subscriptionPlan.addLimit("burstLimit", String.valueOf(plan.throttle().burstLimit()));
+                    }
                 }
                 
-                // Include quota info for display
+                // Include quota info in limits map
                 if (plan.quota() != null) {
-                    opt.addProperty("quotaLimit", plan.quota().limit());
-                    opt.addProperty("quotaPeriod", plan.quota().period().toString());
+                    if (plan.quota().limit() != null) {
+                        subscriptionPlan.addLimit("quotaLimit", String.valueOf(plan.quota().limit()));
+                    }
+                    if (plan.quota().period() != null) {
+                        subscriptionPlan.addLimit("quotaPeriod", plan.quota().period().toString());
+                    }
                 }
                 
-                options.add(opt);
+                subscriptionPlans.add(subscriptionPlan);
             }
 
-            JsonObject body = new JsonObject();
-            body.add("options", options);
-            body.addProperty("optionsType", "usage-plan");
-
-            TierSelectorOptions optionsBody = new TierSelectorOptions(body.toString());
+            SubscriptionPlans optionsBody = new SubscriptionPlans("Usage Plan", subscriptionPlans);
 
             FederatedSubscriptionOptions result = new FederatedSubscriptionOptions();
             result.setBody(optionsBody);
