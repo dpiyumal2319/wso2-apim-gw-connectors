@@ -35,6 +35,7 @@ import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionOptions;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
+import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.http.SdkHttpClient;
@@ -275,10 +276,10 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     }
 
     @Override
-    public String[] getSupportedAuthTypes(FederatedSubscriptionContext context) {
-        // Check if the AWS API actually requires API keys AND has usage plans
+    public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context)
+            throws APIManagementException {
         if (log.isDebugEnabled()) {
-            log.debug("Checking if API requires API keys: " + context.getApiName());
+            log.debug("Checking subscription support for API: " + context.getApiName());
         }
         
         try {
@@ -310,26 +311,101 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             }
             
             if (!apiKeyRequired) {
-                // No method requires API key
+                // No method requires API key → OPEN
                 if (log.isDebugEnabled()) {
-                    log.debug("API " + context.getApiName() + " does not require API keys");
+                    log.debug("API " + context.getApiName() + " does not require API keys - OPEN");
                 }
-                return new String[]{};
+                return new SubscriptionSupportInfo.Builder()
+                        .status(SubscriptionSupportInfo.SubscriptionStatus.OPEN)
+                        .supportedAuthTypes(new String[]{})
+                        .subscriptionOptions(null)
+                        .build();
             }
             
-            // API key required and usage plans are available
-            if (log.isDebugEnabled()) {
-                log.debug("API " + context.getApiName() + " requires API keys");
+            // API key required - check if usage plans are available
+            List<UsagePlan> matchingPlans = findUsagePlansForApi(awsApiId, this.stage);
+            
+            if (matchingPlans.isEmpty()) {
+                // API key required but no usage plans → SECURED
+                // Subscription creation will fail at action time with clear error about missing usage plans
+                if (log.isDebugEnabled()) {
+                    log.debug("API " + context.getApiName() + " requires API keys but no usage plans found - SECURED (will fail at subscription creation)");
+                }
+                return new SubscriptionSupportInfo.Builder()
+                        .status(SubscriptionSupportInfo.SubscriptionStatus.SECURED)
+                        .supportedAuthTypes(new String[]{CREDENTIAL_TYPE})
+                        .subscriptionOptions(null)
+                        .build();
             }
-            return new String[]{CREDENTIAL_TYPE};
+            
+            // API key required + usage plans found → SECURED
+            if (log.isDebugEnabled()) {
+                log.debug("API " + context.getApiName() + " requires API keys with " 
+                        + matchingPlans.size() + " usage plans - SECURED");
+            }
+            
+            // Build subscription options from usage plans
+            FederatedSubscriptionOptions options = buildSubscriptionOptions(matchingPlans);
+            
+            return new SubscriptionSupportInfo.Builder()
+                    .status(SubscriptionSupportInfo.SubscriptionStatus.SECURED)
+                    .supportedAuthTypes(new String[]{CREDENTIAL_TYPE})
+                    .subscriptionOptions(options)
+                    .build();
             
         } catch (Exception e) {
-            log.warn("Error checking API key requirement for API: " + context.getApiName() 
-                    + ". Assuming no subscription required.", e);
-            return new String[]{};
+            log.warn("Error checking subscription support for API: " + context.getApiName() 
+                    + ". Assuming OPEN.", e);
+            return new SubscriptionSupportInfo.Builder()
+                    .status(SubscriptionSupportInfo.SubscriptionStatus.OPEN)
+                    .supportedAuthTypes(new String[]{})
+                    .subscriptionOptions(null)
+                    .build();
         }
     }
-    
+
+    /**
+     * Builds subscription options from usage plans.
+     */
+    private FederatedSubscriptionOptions buildSubscriptionOptions(List<UsagePlan> matchingPlans) {
+        List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> subscriptionPlans = new ArrayList<>();
+        for (UsagePlan plan : matchingPlans) {
+            org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan subscriptionPlan = 
+                    new org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan(
+                        plan.id(),
+                        plan.name(),
+                        plan.description() != null ? plan.description() : ""
+                    );
+            
+            // Include throttle info in limits map
+            if (plan.throttle() != null) {
+                if (plan.throttle().rateLimit() != null) {
+                    subscriptionPlan.addLimit("rateLimit", String.valueOf(plan.throttle().rateLimit()));
+                }
+                if (plan.throttle().burstLimit() != null) {
+                    subscriptionPlan.addLimit("burstLimit", String.valueOf(plan.throttle().burstLimit()));
+                }
+            }
+            
+            // Include quota info in limits map
+            if (plan.quota() != null) {
+                if (plan.quota().limit() != null) {
+                    subscriptionPlan.addLimit("quotaLimit", String.valueOf(plan.quota().limit()));
+                }
+                if (plan.quota().period() != null) {
+                    subscriptionPlan.addLimit("quotaPeriod", plan.quota().period().toString());
+                }
+            }
+            
+            subscriptionPlans.add(subscriptionPlan);
+        }
+
+        SubscriptionPlans optionsBody = new SubscriptionPlans("Usage Plan", subscriptionPlans);
+        FederatedSubscriptionOptions result = new FederatedSubscriptionOptions();
+        result.setBody(optionsBody);
+        return result;
+    }
+
     @Override
     public AgentOperationResult retrieveSubscription(FederatedSubscriptionContext context,
             boolean includeFullCredentials) throws APIManagementException {
@@ -506,71 +582,5 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             log.error("Error finding usage plans for API: " + apiId, e);
         }
         return matching;
-    }
-
-    @Override
-    public FederatedSubscriptionOptions getSubscriptionOptions(FederatedSubscriptionContext context) 
-            throws APIManagementException {
-        try {
-            String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
-            
-            // Find all usage plans associated with this API
-            List<UsagePlan> matchingPlans = findUsagePlansForApi(awsApiId, this.stage);
-            
-            if (matchingPlans.isEmpty()) {
-                if (log.isDebugEnabled()) {
-                    log.debug("No usage plans found for AWS API: " + awsApiId + ", stage: " + this.stage);
-                }
-                return null;  // No options available
-            }
-
-            // Build typed subscription plans
-            List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> subscriptionPlans = new ArrayList<>();
-            for (UsagePlan plan : matchingPlans) {
-                org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan subscriptionPlan = 
-                        new org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan(
-                            plan.id(),
-                            plan.name(),
-                            plan.description() != null ? plan.description() : ""
-                        );
-                
-                // Include throttle info in limits map
-                if (plan.throttle() != null) {
-                    if (plan.throttle().rateLimit() != null) {
-                        subscriptionPlan.addLimit("rateLimit", String.valueOf(plan.throttle().rateLimit()));
-                    }
-                    if (plan.throttle().burstLimit() != null) {
-                        subscriptionPlan.addLimit("burstLimit", String.valueOf(plan.throttle().burstLimit()));
-                    }
-                }
-                
-                // Include quota info in limits map
-                if (plan.quota() != null) {
-                    if (plan.quota().limit() != null) {
-                        subscriptionPlan.addLimit("quotaLimit", String.valueOf(plan.quota().limit()));
-                    }
-                    if (plan.quota().period() != null) {
-                        subscriptionPlan.addLimit("quotaPeriod", plan.quota().period().toString());
-                    }
-                }
-                
-                subscriptionPlans.add(subscriptionPlan);
-            }
-
-            SubscriptionPlans optionsBody = new SubscriptionPlans("Usage Plan", subscriptionPlans);
-
-            FederatedSubscriptionOptions result = new FederatedSubscriptionOptions();
-            result.setBody(optionsBody);
-            
-            if (log.isDebugEnabled()) {
-                log.debug("Found " + matchingPlans.size() + " usage plan options for API: " + awsApiId);
-            }
-            
-            return result;
-            
-        } catch (Exception e) {
-            log.error("Error getting subscription options for API: " + context.getApiName(), e);
-            throw new APIManagementException("Failed to get subscription options from AWS: " + e.getMessage(), e);
-        }
     }
 }

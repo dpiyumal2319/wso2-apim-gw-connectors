@@ -39,6 +39,7 @@ import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionOptions;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
+import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.VHost;
 import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderBasedInvocation;
@@ -362,54 +363,101 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     }
 
     @Override
-    public String[] getSupportedAuthTypes(FederatedSubscriptionContext context) throws APIManagementException {
+    public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context)
+            throws APIManagementException {
         try {
             String serviceId = resolveServiceId(context.getApiReferenceArtifact());
+            
+            // Single API call to list all plugins
             PagedResponse<KongPlugin> pluginsResp = apiGatewayClient.listPluginsByServiceId(
                     controlPlaneId, serviceId, KongConstants.DEFAULT_PLUGIN_LIST_LIMIT);
 
+            boolean hasKeyAuth = false;
+            boolean hasAcl = false;
+            List<String> aclGroups = null;
+
             if (pluginsResp != null && pluginsResp.getData() != null) {
                 for (KongPlugin plugin : pluginsResp.getData()) {
-                    if (KongConstants.KONG_KEY_AUTH_PLUGIN_TYPE.equals(plugin.getName())
-                            && Boolean.TRUE.equals(plugin.getEnabled())) {
-                        return new String[]{"opaque-api-key"};
+                    if (Boolean.TRUE.equals(plugin.getEnabled())) {
+                        // Check for key-auth plugin
+                        if (KongConstants.KONG_KEY_AUTH_PLUGIN_TYPE.equals(plugin.getName())) {
+                            hasKeyAuth = true;
+                        }
+                        
+                        // Check for ACL plugin and extract groups
+                        if (KongConstants.KONG_ACL_PLUGIN_TYPE.equals(plugin.getName())) {
+                            hasAcl = true;
+                            JsonObject config = plugin.getConfig();
+                            if (config != null && config.has("allow") && config.get("allow").isJsonArray()) {
+                                JsonArray allowArray = config.get("allow").getAsJsonArray();
+                                aclGroups = new ArrayList<>();
+                                for (int i = 0; i < allowArray.size(); i++) {
+                                    aclGroups.add(allowArray.get(i).getAsString());
+                                }
+                                if (log.isDebugEnabled()) {
+                                    log.debug("Detected ACL groups: " + aclGroups);
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            return new String[0]; // No key-auth plugin found
-        } catch (Exception e) {
-            log.error("Error checking Kong auth types for API: " + context.getApiName(), e);
-            throw new APIManagementException("Failed to check supported auth types: " + e.getMessage(), e);
-        }
-    }
-
-    @Override
-    public FederatedSubscriptionOptions getSubscriptionOptions(FederatedSubscriptionContext context)
-            throws APIManagementException {
-        try {
-            String serviceId = resolveServiceId(context.getApiReferenceArtifact());
-            List<String> aclGroups = detectAclGroups(serviceId);
-
-            // No ACL or single group → no options needed (single group auto-assigned in createSubscription)
-            if (aclGroups == null || aclGroups.size() <= 1) {
-                return null;
+            // Decision logic
+            if (!hasKeyAuth && !hasAcl) {
+                // No key-auth, no ACL → OPEN
+                if (log.isDebugEnabled()) {
+                    log.debug("API " + context.getApiName() + " has no key-auth or ACL - OPEN");
+                }
+                return new SubscriptionSupportInfo.Builder()
+                        .status(SubscriptionSupportInfo.SubscriptionStatus.OPEN)
+                        .supportedAuthTypes(new String[]{})
+                        .subscriptionOptions(null)
+                        .build();
             }
 
-            // Multiple ACL groups → expose as subscription options
-            List<SubscriptionPlan> plans = new ArrayList<>();
-            for (String group : aclGroups) {
-                plans.add(new SubscriptionPlan(group, group, null));
+            if (hasAcl && !hasKeyAuth) {
+                // ACL without key-auth → OPEN (Kong doesn't validate credentials, effectively open)
+                if (log.isDebugEnabled()) {
+                    log.debug("API " + context.getApiName() + " has ACL but no key-auth - treating as OPEN");
+                }
+                return new SubscriptionSupportInfo.Builder()
+                        .status(SubscriptionSupportInfo.SubscriptionStatus.OPEN)
+                        .supportedAuthTypes(new String[]{})
+                        .subscriptionOptions(null)
+                        .build();
             }
 
-            SubscriptionPlans body = new SubscriptionPlans("Access Group", plans);
-            FederatedSubscriptionOptions options = new FederatedSubscriptionOptions();
-            options.setBody(body);
-            return options;
+            // key-auth enabled → SECURED
+            if (log.isDebugEnabled()) {
+                log.debug("API " + context.getApiName() + " has key-auth enabled - SECURED");
+            }
+
+            // Build subscription options if multiple ACL groups exist
+            FederatedSubscriptionOptions options = null;
+            if (aclGroups != null && aclGroups.size() > 1) {
+                List<SubscriptionPlan> plans = new ArrayList<>();
+                for (String group : aclGroups) {
+                    plans.add(new SubscriptionPlan(group, group, null));
+                }
+                SubscriptionPlans body = new SubscriptionPlans("Access Group", plans);
+                options = new FederatedSubscriptionOptions();
+                options.setBody(body);
+                
+                if (log.isDebugEnabled()) {
+                    log.debug("Exposing " + aclGroups.size() + " ACL groups as subscription options");
+                }
+            }
+
+            return new SubscriptionSupportInfo.Builder()
+                    .status(SubscriptionSupportInfo.SubscriptionStatus.SECURED)
+                    .supportedAuthTypes(new String[]{"opaque-api-key"})
+                    .subscriptionOptions(options)
+                    .build();
 
         } catch (Exception e) {
-            log.error("Error fetching subscription options for API: " + context.getApiName(), e);
-            throw new APIManagementException("Failed to get subscription options: " + e.getMessage(), e);
+            log.error("Error checking subscription support for API: " + context.getApiName(), e);
+            throw new APIManagementException("Failed to check subscription support: " + e.getMessage(), e);
         }
     }
 

@@ -25,6 +25,7 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
+import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.schema.credential.PrimarySecondaryKeyPairCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderWithQueryFallbackInvocation;
 
@@ -544,7 +545,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     }
 
     @Override
-    public String[] getSupportedAuthTypes(FederatedSubscriptionContext context) throws APIManagementException {
+    public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context) 
+            throws APIManagementException {
         if (log.isDebugEnabled()) {
             log.debug("Checking subscription support for API: " + context.getApiName());
         }
@@ -566,17 +568,26 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
             if (subscriptionRequired != null && subscriptionRequired) {
                 if (log.isDebugEnabled()) {
-                    log.debug("API requires subscription: " + apiName);
+                    log.debug("API requires subscription: " + apiName + " - SECURED");
                 }
-                return new String[]{"primary-secondary-key-pair"};
+                return new SubscriptionSupportInfo.Builder()
+                        .status(SubscriptionSupportInfo.SubscriptionStatus.SECURED)
+                        .supportedAuthTypes(new String[]{"primary-secondary-key-pair"})
+                        .subscriptionOptions(null)
+                        .build();
             } else {
                 if (log.isDebugEnabled()) {
-                    log.debug("API does not require subscription: " + apiName);
+                    log.debug("API does not require subscription: " + apiName + " - OPEN");
                 }
-                return new String[]{};  // No subscription security
+                return new SubscriptionSupportInfo.Builder()
+                        .status(SubscriptionSupportInfo.SubscriptionStatus.OPEN)
+                        .supportedAuthTypes(new String[]{})
+                        .subscriptionOptions(null)
+                        .build();
             }
+
         } catch (Exception e) {
-            log.error("Error checking subscription support for API", e);
+            log.error("Error checking subscription support for API: " + context.getApiName(), e);
             throw new APIManagementException("Failed to check subscription support: " + e.getMessage(), e);
         }
     }
