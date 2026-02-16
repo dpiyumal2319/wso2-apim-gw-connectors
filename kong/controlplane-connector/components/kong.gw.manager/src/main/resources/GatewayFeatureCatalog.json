@@ -42,7 +42,7 @@
       "federatedSubscription": [
         {
           "credentialSchema": "opaque-api-key",
-          "invocationSchema": "header-based"
+          "invocationSchema": "api-key-invocation"
         }
       ]
     }

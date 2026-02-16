@@ -19,7 +19,7 @@
       "federatedSubscription": [
         {
           "credentialSchema": "primary-secondary-key-pair",
-          "invocationSchema": "header-with-query-fallback"
+          "invocationSchema": "api-key-invocation"
         }
       ]
     }

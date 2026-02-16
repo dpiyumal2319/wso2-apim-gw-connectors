@@ -27,7 +27,7 @@ import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.schema.credential.PrimarySecondaryKeyPairCredential;
-import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderWithQueryFallbackInvocation;
+import org.wso2.carbon.apimgt.api.model.schema.invocation.ApiKeyInvocation;
 
 
 import java.time.format.DateTimeFormatter;
@@ -55,7 +55,6 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     private static final Log log = LogFactory.getLog(AzureFederatedSubscriptionAgent.class);
     private static final String GATEWAY_TYPE = "Azure";
     private static final String CREDENTIAL_TYPE = "primary-secondary-key-pair";
-    private static final String INVOCATION_SCHEMA = "header-with-query-fallback";
     private static final String HEADER_NAME = "Ocp-Apim-Subscription-Key";
     private static final String QUERY_PARAM_NAME = "subscription-key";
 
@@ -351,15 +350,16 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
                     "You can pass the subscription key either in the '%s' header or as a '%s' query parameter.",
                     HEADER_NAME, QUERY_PARAM_NAME);
 
-            HeaderWithQueryFallbackInvocation invBody = new HeaderWithQueryFallbackInvocation(
-                HEADER_NAME,
-                QUERY_PARAM_NAME,
-                baseUrl,
-                basePath,
-                curlExampleHeader,
-                curlExampleQuery,
-                notes
-            );
+            ApiKeyInvocation invBody = new ApiKeyInvocation();
+            invBody.setHeaderEnabled(true);
+            invBody.setQueryParamEnabled(true);
+            invBody.setHeaderName(HEADER_NAME);
+            invBody.setQueryParamName(QUERY_PARAM_NAME);
+            invBody.setBaseUrl(baseUrl);
+            invBody.setBasePath(basePath);
+            invBody.setCurlExampleHeader(curlExampleHeader);
+            invBody.setCurlExampleQuery(curlExampleQuery);
+            invBody.setNotes(notes);
 
             InvocationInstruction instruction = new InvocationInstruction();
             instruction.setBody(invBody);

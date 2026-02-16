@@ -24,7 +24,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
-import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderBasedInvocation;
+import org.wso2.carbon.apimgt.api.model.schema.invocation.ApiKeyInvocation;
 import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedSubscriptionAgent;
@@ -267,7 +267,12 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
                     context.getApiName() + ", using placeholder URL", e);
         }
         
-        HeaderBasedInvocation invBody = new HeaderBasedInvocation(HEADER_NAME, baseUrl, basePath, curlExampleHeader);
+        ApiKeyInvocation invBody = new ApiKeyInvocation();
+        invBody.setHeaderEnabled(true);
+        invBody.setHeaderName(HEADER_NAME);
+        invBody.setBaseUrl(baseUrl);
+        invBody.setBasePath(basePath);
+        invBody.setCurlExampleHeader(curlExampleHeader);
 
         InvocationInstruction instruction = new InvocationInstruction();
         instruction.setBody(invBody);

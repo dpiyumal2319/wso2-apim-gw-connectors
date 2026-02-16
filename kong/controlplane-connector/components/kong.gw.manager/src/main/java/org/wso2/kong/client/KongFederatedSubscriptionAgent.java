@@ -42,7 +42,7 @@ import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.VHost;
 import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
-import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderBasedInvocation;
+import org.wso2.carbon.apimgt.api.model.schema.invocation.ApiKeyInvocation;
 import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan;
 import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
 import org.wso2.carbon.apimgt.impl.kmclient.ApacheFeignHttpClient;
@@ -537,8 +537,12 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 "curl -X GET \"%s%s{path}\" -H \"%s: {YOUR_API_KEY}\"",
                 baseUrl, basePath, keyAuthHeader);
 
-        HeaderBasedInvocation invBody = new HeaderBasedInvocation(
-                keyAuthHeader, baseUrl, basePath, curlExampleHeader);
+        ApiKeyInvocation invBody = new ApiKeyInvocation();
+        invBody.setHeaderEnabled(true);
+        invBody.setHeaderName(keyAuthHeader);
+        invBody.setBaseUrl(baseUrl);
+        invBody.setBasePath(basePath);
+        invBody.setCurlExampleHeader(curlExampleHeader);
 
         InvocationInstruction instruction = new InvocationInstruction();
         instruction.setBody(invBody);
