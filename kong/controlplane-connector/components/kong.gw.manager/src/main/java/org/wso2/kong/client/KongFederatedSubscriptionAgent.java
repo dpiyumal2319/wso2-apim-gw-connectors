@@ -83,7 +83,6 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private KongKonnectApi apiGatewayClient;
     private String controlPlaneId;
     private String proxyUrl;
-    private String keyAuthHeader;
 
     @Override
     public void init(Environment environment, String organization) throws APIManagementException {
@@ -97,7 +96,6 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             this.controlPlaneId = environment.getAdditionalProperties().get(KongConstants.KONG_CONTROL_PLANE_ID);
             String authToken = environment.getAdditionalProperties().get(KongConstants.KONG_AUTH_TOKEN);
             this.proxyUrl = environment.getAdditionalProperties().get(KongConstants.KONG_PROXY_URL);
-            this.keyAuthHeader = KongConstants.DEFAULT_KEY_AUTH_HEADER;
 
             if (adminUrl == null || controlPlaneId == null || authToken == null) {
                 throw new APIManagementException("Missing required Kong environment configurations");
@@ -147,6 +145,9 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             // Resolve Kong service ID from API reference artifact
             String serviceId = resolveServiceId(context.getApiReferenceArtifact());
 
+            // Fetch key-auth plugin configuration to get header name and enabled methods
+            KeyAuthPluginConfig pluginConfig = fetchKeyAuthPluginConfig(serviceId);
+
             // Generate consumer username using WSO2 pattern
             String consumerUsername = KongConstants.CONSUMER_NAME_PREFIX + context.getSubscriptionUuid();
 
@@ -195,8 +196,9 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 }
             }
 
-            // Build credential
-            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(keyAuthHeader, keyAuth.getKey());
+            // Build credential - use the first key name from plugin config
+            String headerName = pluginConfig.keyNames.get(0);
+            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(headerName, keyAuth.getKey());
 
             FederatedCredential credential = new FederatedCredential();
             credential.setBody(credBody);
@@ -204,11 +206,11 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction and reference artifact
-            InvocationInstruction instruction = getInvocationInstruction(context);
+            // Build invocation instruction with dynamic plugin config
+            InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
             String referenceArtifact = buildReferenceArtifact(
                     credential, instruction, consumer.getId(), keyAuth.getId(), serviceId, aclGroup,
-                    selectedOption);
+                    selectedOption, pluginConfig);
 
             if (log.isDebugEnabled()) {
                 log.debug("Subscription credential created successfully for: " + consumerUsername);
@@ -241,6 +243,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             String serviceId = extractServiceIdFromArtifact(context);
             String aclGroup = extractAclGroupFromArtifact(context);
             String selectedOption = extractSelectedOptionFromArtifact(context);
+            KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
 
             // Delete old key-auth credential
             try {
@@ -260,8 +263,9 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 throw new APIManagementException("Failed to create new Kong key-auth credential");
             }
 
-            // Build credential
-            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(keyAuthHeader, keyAuth.getKey());
+            // Build credential - use the first key name from stored plugin config
+            String headerName = pluginConfig.keyNames.get(0);
+            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(headerName, keyAuth.getKey());
 
             FederatedCredential credential = new FederatedCredential();
             credential.setBody(credBody);
@@ -269,11 +273,11 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction and reference artifact (preserving selectedOption)
-            InvocationInstruction instruction = getInvocationInstruction(context);
+            // Build invocation instruction and reference artifact (preserving selectedOption and pluginConfig)
+            InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
             String referenceArtifact = buildReferenceArtifact(
                     credential, instruction, consumerId, keyAuth.getId(), serviceId, aclGroup,
-                    selectedOption);
+                    selectedOption, pluginConfig);
 
             if (log.isDebugEnabled()) {
                 log.debug("Credential regenerated successfully for: " + context.getExternalSubscriptionId());
@@ -340,7 +344,9 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             credential.setMasked(true);
         }
 
-        InvocationInstruction instruction = getInvocationInstruction(context);
+        // Extract stored plugin config for invocation instruction
+        KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
+        InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
 
         return AgentOperationResult.builder()
                 .credential(credential)
@@ -529,20 +535,61 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
         }
     }
 
-    private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context) {
+    /**
+     * Builds dynamic invocation instruction based on key-auth plugin configuration.
+     * Uses the actual enabled methods (header/query/body) and key names from Kong.
+     */
+    private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context,
+                                                           KeyAuthPluginConfig pluginConfig) {
         String baseUrl = proxyUrl;
         String basePath = context.getApiContext();
 
-        String curlExampleHeader = String.format(
-                "curl -X GET \"%s%s{path}\" -H \"%s: {YOUR_API_KEY}\"",
-                baseUrl, basePath, keyAuthHeader);
-
         ApiKeyInvocation invBody = new ApiKeyInvocation();
-        invBody.setHeaderEnabled(true);
-        invBody.setHeaderName(keyAuthHeader);
         invBody.setBaseUrl(baseUrl);
         invBody.setBasePath(basePath);
-        invBody.setCurlExampleHeader(curlExampleHeader);
+
+        // Use first key name for all methods (Kong supports multiple names but uses same name across methods)
+        String primaryKeyName = pluginConfig.keyNames.get(0);
+
+        // Header method
+        if (pluginConfig.keyInHeader) {
+            invBody.setHeaderEnabled(true);
+            invBody.setHeaderName(primaryKeyName);
+            String curlExampleHeader = String.format(
+                    "curl -X GET \"%s%s{path}\" -H \"%s: {YOUR_API_KEY}\"",
+                    baseUrl, basePath, primaryKeyName);
+            invBody.setCurlExampleHeader(curlExampleHeader);
+        }
+
+        // Query parameter method
+        if (pluginConfig.keyInQuery) {
+            invBody.setQueryParamEnabled(true);
+            invBody.setQueryParamName(primaryKeyName);
+            String curlExampleQuery = String.format(
+                    "curl -X GET \"%s%s{path}?%s={YOUR_API_KEY}\"",
+                    baseUrl, basePath, primaryKeyName);
+            invBody.setCurlExampleQuery(curlExampleQuery);
+        }
+
+        // Body method
+        if (pluginConfig.keyInBody) {
+            invBody.setBodyEnabled(true);
+            invBody.setBodyParamName(primaryKeyName);
+        }
+
+        // Add notes about available methods
+        StringBuilder notes = new StringBuilder("API key can be sent via: ");
+        List<String> methods = new ArrayList<>();
+        if (pluginConfig.keyInHeader) {
+            methods.add("HTTP header '" + primaryKeyName + "'");
+        }
+        if (pluginConfig.keyInQuery) {
+            methods.add("query parameter '" + primaryKeyName + "'");
+        }
+        if (pluginConfig.keyInBody) {
+            methods.add("request body field '" + primaryKeyName + "'");
+        }
+        invBody.setNotes(notes.append(String.join(", ", methods)).toString());
 
         InvocationInstruction instruction = new InvocationInstruction();
         instruction.setBody(invBody);
@@ -552,7 +599,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String buildReferenceArtifact(FederatedCredential credential, InvocationInstruction instruction,
             String consumerId, String keyAuthId, String serviceId, String aclGroup,
-            String selectedOption) throws APIManagementException {
+            String selectedOption, KeyAuthPluginConfig pluginConfig) throws APIManagementException {
         try {
             JsonObject artifact = new JsonObject();
 
@@ -589,6 +636,20 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             }
             if (selectedOption != null) {
                 artifact.addProperty("selectedOption", selectedOption);
+            }
+
+            // Store plugin configuration for future retrieval/regeneration
+            if (pluginConfig != null) {
+                JsonObject pluginConfigJson = new JsonObject();
+                JsonArray keyNamesArray = new JsonArray();
+                for (String keyName : pluginConfig.keyNames) {
+                    keyNamesArray.add(keyName);
+                }
+                pluginConfigJson.add("keyNames", keyNamesArray);
+                pluginConfigJson.addProperty("keyInHeader", pluginConfig.keyInHeader);
+                pluginConfigJson.addProperty("keyInQuery", pluginConfig.keyInQuery);
+                pluginConfigJson.addProperty("keyInBody", pluginConfig.keyInBody);
+                artifact.add("pluginConfig", pluginConfigJson);
             }
 
             return artifact.toString();
@@ -639,6 +700,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private FederatedCredential retrieveFullCredential(FederatedSubscriptionContext context)
             throws APIManagementException {
         String consumerId = extractConsumerIdFromArtifact(context);
+        KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
 
         if (log.isDebugEnabled()) {
             log.debug("Retrieving full credential for Kong consumer: " + consumerId);
@@ -655,8 +717,9 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
             KongKeyAuth keyAuth = keyAuthResp.getData().get(0);
 
-            // Build credential with full key value
-            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(keyAuthHeader, keyAuth.getKey());
+            // Build credential with full key value - use the first key name from stored plugin config
+            String headerName = pluginConfig.keyNames.get(0);
+            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(headerName, keyAuth.getKey());
 
             FederatedCredential credential = new FederatedCredential();
             credential.setBody(credBody);
@@ -719,6 +782,134 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
         } catch (Exception e) {
             log.warn("Failed to extract selectedOption from reference artifact", e);
             return null;
+        }
+    }
+
+    /**
+     * Fetches the key-auth plugin configuration from Kong for the given service.
+     * Returns the actual enabled methods and key names configured on the gateway.
+     */
+    private KeyAuthPluginConfig fetchKeyAuthPluginConfig(String serviceId) throws APIManagementException {
+        try {
+            PagedResponse<KongPlugin> pluginsResp = apiGatewayClient.listPluginsByServiceId(
+                    controlPlaneId, serviceId, KongConstants.DEFAULT_PLUGIN_LIST_LIMIT);
+
+            if (pluginsResp != null && pluginsResp.getData() != null) {
+                for (KongPlugin plugin : pluginsResp.getData()) {
+                    if (KongConstants.KONG_KEY_AUTH_PLUGIN_TYPE.equals(plugin.getName())
+                            && Boolean.TRUE.equals(plugin.getEnabled())) {
+                        JsonObject config = plugin.getConfig();
+                        
+                        // Extract key_names (defaults to ["apikey"])
+                        List<String> keyNames = new ArrayList<>();
+                        if (config != null && config.has("key_names") && config.get("key_names").isJsonArray()) {
+                            JsonArray keyNamesArray = config.get("key_names").getAsJsonArray();
+                            for (int i = 0; i < keyNamesArray.size(); i++) {
+                                keyNames.add(keyNamesArray.get(i).getAsString());
+                            }
+                        }
+                        if (keyNames.isEmpty()) {
+                            keyNames.add(KongConstants.DEFAULT_KEY_AUTH_HEADER); // Kong's default
+                        }
+
+                        // Extract enabled methods (defaults: header=true, query=false, body=false)
+                        boolean keyInHeader = true; // Kong default
+                        boolean keyInQuery = false;
+                        boolean keyInBody = false;
+
+                        if (config != null) {
+                            if (config.has("key_in_header") && config.get("key_in_header").isJsonPrimitive()) {
+                                keyInHeader = config.get("key_in_header").getAsBoolean();
+                            }
+                            if (config.has("key_in_query") && config.get("key_in_query").isJsonPrimitive()) {
+                                keyInQuery = config.get("key_in_query").getAsBoolean();
+                            }
+                            if (config.has("key_in_body") && config.get("key_in_body").isJsonPrimitive()) {
+                                keyInBody = config.get("key_in_body").getAsBoolean();
+                            }
+                        }
+
+                        if (log.isDebugEnabled()) {
+                            log.debug("Fetched key-auth plugin config - keyNames: " + keyNames +
+                                    ", header: " + keyInHeader + ", query: " + keyInQuery + ", body: " + keyInBody);
+                        }
+
+                        return new KeyAuthPluginConfig(keyNames, keyInHeader, keyInQuery, keyInBody);
+                    }
+                }
+            }
+
+            // No key-auth plugin found - shouldn't happen if called correctly, but provide defaults
+            log.warn("No key-auth plugin found for service: " + serviceId + ", using defaults");
+            List<String> defaultKeyNames = new ArrayList<>();
+            defaultKeyNames.add(KongConstants.DEFAULT_KEY_AUTH_HEADER);
+            return new KeyAuthPluginConfig(defaultKeyNames, true, false, false);
+
+        } catch (Exception e) {
+            log.error("Error fetching key-auth plugin config for service: " + serviceId, e);
+            throw new APIManagementException("Failed to fetch key-auth plugin configuration: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Extracts the stored plugin configuration from the reference artifact.
+     */
+    private KeyAuthPluginConfig extractPluginConfigFromArtifact(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        try {
+            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            
+            if (!artifact.has("pluginConfig")) {
+                // Fallback for old artifacts without stored config - use defaults
+                log.warn("No plugin config in reference artifact, using defaults");
+                List<String> defaultKeyNames = new ArrayList<>();
+                defaultKeyNames.add(KongConstants.DEFAULT_KEY_AUTH_HEADER);
+                return new KeyAuthPluginConfig(defaultKeyNames, true, false, false);
+            }
+
+            JsonObject pluginConfigJson = artifact.getAsJsonObject("pluginConfig");
+            
+            // Extract key names
+            List<String> keyNames = new ArrayList<>();
+            if (pluginConfigJson.has("keyNames") && pluginConfigJson.get("keyNames").isJsonArray()) {
+                JsonArray keyNamesArray = pluginConfigJson.getAsJsonArray("keyNames");
+                for (int i = 0; i < keyNamesArray.size(); i++) {
+                    keyNames.add(keyNamesArray.get(i).getAsString());
+                }
+            }
+            if (keyNames.isEmpty()) {
+                keyNames.add(KongConstants.DEFAULT_KEY_AUTH_HEADER);
+            }
+
+            // Extract enabled methods
+            boolean keyInHeader = pluginConfigJson.has("keyInHeader") 
+                    ? pluginConfigJson.get("keyInHeader").getAsBoolean() : true;
+            boolean keyInQuery = pluginConfigJson.has("keyInQuery")
+                    ? pluginConfigJson.get("keyInQuery").getAsBoolean() : false;
+            boolean keyInBody = pluginConfigJson.has("keyInBody")
+                    ? pluginConfigJson.get("keyInBody").getAsBoolean() : false;
+
+            return new KeyAuthPluginConfig(keyNames, keyInHeader, keyInQuery, keyInBody);
+
+        } catch (Exception e) {
+            throw new APIManagementException("Failed to extract plugin config from reference artifact", e);
+        }
+    }
+
+    /**
+     * Internal class to hold key-auth plugin configuration.
+     */
+    private static class KeyAuthPluginConfig {
+        final List<String> keyNames;
+        final boolean keyInHeader;
+        final boolean keyInQuery;
+        final boolean keyInBody;
+
+        KeyAuthPluginConfig(List<String> keyNames, boolean keyInHeader, boolean keyInQuery, boolean keyInBody) {
+            this.keyNames = keyNames;
+            this.keyInHeader = keyInHeader;
+            this.keyInQuery = keyInQuery;
+            this.keyInBody = keyInBody;
         }
     }
 }

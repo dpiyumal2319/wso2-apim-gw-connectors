@@ -303,6 +303,17 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     /**
      * Generates invocation instruction for the Azure API.
      */
+    /**
+     * Generates invocation instruction for the Azure API.
+     * 
+     * Azure API Management has a fixed authentication pattern:
+     * - Header name: "Ocp-Apim-Subscription-Key" (Azure standard, not configurable)
+     * - Query parameter name: "subscription-key" (Azure standard, not configurable)
+     * - Both methods are ALWAYS enabled (Azure's built-in behavior)
+     * 
+     * This is determined by Azure APIM's architecture, not runtime configuration.
+     * See: https://learn.microsoft.com/en-us/azure/api-management/api-management-subscriptions
+     */
     private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context)
             throws APIManagementException {
         if (log.isDebugEnabled()) {

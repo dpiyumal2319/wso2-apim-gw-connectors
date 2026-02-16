@@ -33,6 +33,7 @@ import org.wso2.carbon.apimgt.api.model.API;
 import org.wso2.carbon.apimgt.api.model.APIIdentifier;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.OperationPolicy;
+import org.wso2.carbon.apimgt.api.model.Tier;
 import org.wso2.carbon.apimgt.api.model.URITemplate;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.apigateway.ApiGatewayClient;
@@ -76,8 +77,10 @@ import software.amazon.awssdk.services.apigateway.model.RestApi;
 import software.amazon.awssdk.services.apigateway.model.UpdateMethodRequest;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -615,6 +618,7 @@ public class AWSAPIUtil {
         api.setGatewayVendor("external");
         api.setEnableSubscriberVerification(false);
         api.setGatewayType(environment.getGatewayType());
+        api.setAvailableTiers(new HashSet<>(Collections.singleton(new Tier("Unlimited"))));
         return api;
     }
 

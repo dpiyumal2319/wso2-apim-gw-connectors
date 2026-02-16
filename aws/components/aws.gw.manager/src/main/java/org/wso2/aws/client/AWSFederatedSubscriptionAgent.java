@@ -245,6 +245,12 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
 
     /**
      * Generates invocation instruction for the AWS API.
+     * 
+     * AWS API Gateway has a fixed authentication pattern:
+     * - Header name: "x-api-key" (AWS standard, not configurable)
+     * - Header-only delivery (no query parameter or body support)
+     * 
+     * This is determined by AWS's API Gateway architecture, not runtime configuration.
      */
     private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context) {
         // Extract AWS API ID from reference artifact and build real execution URL
