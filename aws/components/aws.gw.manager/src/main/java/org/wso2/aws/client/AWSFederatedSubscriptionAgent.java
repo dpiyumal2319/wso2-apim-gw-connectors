@@ -584,21 +584,9 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     }
     
     /**
-     * Extracts AWS API ID from the reference artifact JSON array format.
-     * The reference artifact is a JSON array: [ { restApi object with "id" field }, { openapi spec } ]
+     * Extracts AWS API ID from the reference artifact using the shared utility method.
      */
     private String extractAWSApiIdFromReferenceArtifact(String referenceArtifact) throws APIManagementException {
-        try {
-            com.google.gson.JsonArray jsonArray = JsonParser.parseString(referenceArtifact).getAsJsonArray();
-            if (jsonArray.size() > 0) {
-                JsonObject restApiObject = jsonArray.get(0).getAsJsonObject();
-                if (restApiObject.has("id")) {
-                    return restApiObject.get("id").getAsString();
-                }
-            }
-            throw new APIManagementException("Error while extracting AWS API ID from reference artifact");
-        } catch (Exception e) {
-            throw new APIManagementException("Error while parsing reference artifact", e);
-        }
+        return org.wso2.aws.client.util.GatewayUtil.getAWSApiIdFromReferenceArtifact(referenceArtifact);
     }
 }

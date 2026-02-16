@@ -18,6 +18,18 @@
 
 package org.wso2.aws.client.util;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -47,16 +59,6 @@ import software.amazon.awssdk.services.apigateway.model.UpdateGatewayResponseReq
 import software.amazon.awssdk.services.apigateway.model.UpdateIntegrationResponseRequest;
 import software.amazon.awssdk.services.apigateway.model.UpdateMethodResponseRequest;
 
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 /**
  * This class contains utility methods for the AWS API Gateway
  */
@@ -64,14 +66,42 @@ public class GatewayUtil {
 
     private static final Pattern VALID_PATH_PATTERN = Pattern.compile("^[a-zA-Z0-9-._~%!$&'()*+,;=:@/]*$");
 
+    /**
+     * Extracts AWS API ID from the reference artifact.
+     * Handles two formats:
+     * 1. JSON array format (from discovery): [ { restApi object with "id" field }, { openapi spec } ]
+     * 2. String format (from deploy): GetRestApiResponse(Id=xxx, Name=yyy, ...)
+     */
     public static String getAWSApiIdFromReferenceArtifact(String referenceArtifact) throws APIManagementException {
-        Pattern pattern = Pattern.compile(AWSConstants.AWS_ID_PATTERN);
-        Matcher matcher = pattern.matcher(referenceArtifact);
+        if (referenceArtifact == null || referenceArtifact.trim().isEmpty()) {
+            throw new APIManagementException("Reference artifact is null or empty");
+        }
 
-        if (matcher.find()) {
-            return matcher.group(1);
-        } else {
-            throw new APIManagementException("Error while extracting AWS API ID from reference artifact");
+        try {
+            // Try JSON array format first (discovery path)
+            if (referenceArtifact.trim().startsWith("[")) {
+                JsonArray jsonArray = JsonParser.parseString(referenceArtifact).getAsJsonArray();
+                if (!jsonArray.isEmpty()) {
+                    JsonObject restApiObject = jsonArray.get(0).getAsJsonObject();
+                    if (restApiObject.has("id")) {
+                        return restApiObject.get("id").getAsString();
+                    }
+                }
+            }
+
+            // Try string format (deploy path): GetRestApiResponse(Id=xxx, ...)
+            Pattern pattern = Pattern.compile(AWSConstants.AWS_ID_PATTERN);
+            Matcher matcher = pattern.matcher(referenceArtifact);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+
+            throw new APIManagementException("Error while extracting AWS API ID from reference artifact: " +
+                    "unable to parse reference artifact in either JSON or string format");
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Error while parsing reference artifact", e);
         }
     }
 
@@ -92,7 +122,7 @@ public class GatewayUtil {
                 return endpointConfig;
             }
             JSONParser parser = new JSONParser();
-            JSONObject endpointConfigJson = null;
+            JSONObject endpointConfigJson;
 
             endpointConfigJson = (JSONObject) parser.parse(endpointConfig);
 
