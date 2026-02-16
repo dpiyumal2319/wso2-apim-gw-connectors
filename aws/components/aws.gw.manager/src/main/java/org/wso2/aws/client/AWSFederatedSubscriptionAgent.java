@@ -26,7 +26,6 @@ import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.HeaderBasedInvocation;
 import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
-import org.wso2.aws.client.util.GatewayUtil;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedSubscriptionAgent;
 import org.wso2.carbon.apimgt.api.model.AgentOperationResult;
@@ -254,7 +253,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         String curlExampleHeader = "curl -H '" + HEADER_NAME + ": {apiKey}' https://{api-url}/{stage}";
         
         try {
-            String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+            String awsApiId = extractAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
             baseUrl = "https://" + awsApiId + ".execute-api." + region + ".amazonaws.com";
             basePath = "/" + (stage != null ? stage : "{stage}");
             curlExampleHeader = "curl -H '" + HEADER_NAME + ": {apiKey}' " + baseUrl + basePath;
@@ -284,7 +283,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         
         try {
             // Extract AWS API ID from reference artifact
-            String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+            String awsApiId = extractAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
             
             // Get all resources (routes) for this API with embedded methods
             GetResourcesRequest getResourcesRequest = GetResourcesRequest.builder()
@@ -582,5 +581,24 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             log.error("Error finding usage plans for API: " + apiId, e);
         }
         return matching;
+    }
+    
+    /**
+     * Extracts AWS API ID from the reference artifact JSON array format.
+     * The reference artifact is a JSON array: [ { restApi object with "id" field }, { openapi spec } ]
+     */
+    private String extractAWSApiIdFromReferenceArtifact(String referenceArtifact) throws APIManagementException {
+        try {
+            com.google.gson.JsonArray jsonArray = JsonParser.parseString(referenceArtifact).getAsJsonArray();
+            if (jsonArray.size() > 0) {
+                JsonObject restApiObject = jsonArray.get(0).getAsJsonObject();
+                if (restApiObject.has("id")) {
+                    return restApiObject.get("id").getAsString();
+                }
+            }
+            throw new APIManagementException("Error while extracting AWS API ID from reference artifact");
+        } catch (Exception e) {
+            throw new APIManagementException("Error while parsing reference artifact", e);
+        }
     }
 }

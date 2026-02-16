@@ -645,29 +645,40 @@ public class AWSAPIUtil {
         }
     }
 
+    // RESET: Reset to older implementation
     private static String getEndpointUrls(String restApiId, ApiGatewayClient client) {
         GetResourcesResponse resources = client.getResources(GetResourcesRequest.builder()
                 .restApiId(restApiId)
                 .build());
 
-        if (resources.hasItems() && resources.items().get(0).resourceMethods() != null
-                && !resources.items().get(0).resourceMethods().isEmpty()) {
-            String httpMethod = resources.items().get(0).resourceMethods()
-                    .keySet()
-                    .iterator()
-                    .next()
-                    .toString();
-            GetIntegrationRequest request = GetIntegrationRequest.builder()
-                    .restApiId(restApiId)
-                    .resourceId(resources.items().get(0).id())
-                    .httpMethod(httpMethod)
-                    .build();
+        if (resources.hasItems()) {
+            for (Resource resource : resources.items()) {
+                if (resource.resourceMethods() != null && !resource.resourceMethods().isEmpty()) {
+                    for (String httpMethod : resource.resourceMethods().keySet()) {
+                        if ("OPTIONS".equalsIgnoreCase(httpMethod)) {
+                            continue;
+                        }
+                        GetIntegrationRequest request = GetIntegrationRequest.builder()
+                                .restApiId(restApiId)
+                                .resourceId(resource.id())
+                                .httpMethod(httpMethod)
+                                .build();
 
-            GetIntegrationResponse response = client.getIntegration(request);
-            return response.uri();
-        } else {
-            return null;
+                        try {
+                            GetIntegrationResponse response = client.getIntegration(request);
+                            if (response.type() != IntegrationType.MOCK && response.uri() != null 
+                                    && !response.uri().isEmpty()) {
+                                return response.uri();
+                            }
+                        } catch (Exception e) {
+                            log.debug("Error getting integration for resource " + resource.id() + 
+                                    " and method " + httpMethod + ": " + e.getMessage());
+                        }
+                    }
+                }
+            }
         }
+        return null;
     }
 
     /**
