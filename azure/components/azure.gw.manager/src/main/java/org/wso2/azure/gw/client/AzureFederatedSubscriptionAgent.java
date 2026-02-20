@@ -177,8 +177,11 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction and reference artifact
-            InvocationInstruction instruction = getInvocationInstruction(context);
+            // Build invocation instruction and reference artifact — prefer snapshot over live gateway call
+            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+            if (instruction == null) {
+                instruction = getInvocationInstruction(context);
+            }
             String referenceArtifact = buildReferenceArtifact(credential, instruction);
 
             if (log.isDebugEnabled()) {
@@ -251,8 +254,11 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction and reference artifact
-            InvocationInstruction instruction = getInvocationInstruction(context);
+            // Build invocation instruction and reference artifact — prefer snapshot over live gateway call
+            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+            if (instruction == null) {
+                instruction = getInvocationInstruction(context);
+            }
             String referenceArtifact = buildReferenceArtifact(credential, instruction);
 
             if (log.isDebugEnabled()) {
@@ -405,7 +411,10 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setMasked(true);
         }
 
-        InvocationInstruction instruction = getInvocationInstruction(context);
+        InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+        if (instruction == null) {
+            instruction = getInvocationInstruction(context);
+        }
 
         return AgentOperationResult.builder()
                 .credential(credential)
@@ -555,7 +564,6 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         return GATEWAY_TYPE;
     }
 
-    @Override
     public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context) 
             throws APIManagementException {
         if (log.isDebugEnabled()) {
@@ -778,5 +786,23 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         }
         int maskLength = Math.min(8, length - visibleChars);
         return "•".repeat(maskLength) + credentialValue.substring(length - visibleChars);
+    }
+
+    @Override
+    public SubscriptionSupportInfo getFederationConfigProvider(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        SubscriptionSupportInfo info = getSubscriptionSupportInfo(context);
+        if (info != null && info.getStatus() == SubscriptionSupportInfo.SubscriptionStatus.SECURED) {
+            info.setInvocationTemplate(getInvocationInstruction(context));
+        }
+        return info;
+    }
+
+    private InvocationInstruction extractInvocationFromSnapshot(FederatedSubscriptionContext context) {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null) {
+            return null;
+        }
+        return snapshot.getInvocationTemplate();
     }
 }
