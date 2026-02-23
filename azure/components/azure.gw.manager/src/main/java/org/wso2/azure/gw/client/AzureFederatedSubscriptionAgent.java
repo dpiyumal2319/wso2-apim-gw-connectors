@@ -54,9 +54,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     private static final Log log = LogFactory.getLog(AzureFederatedSubscriptionAgent.class);
     private static final String GATEWAY_TYPE = "Azure";
-    private static final String CREDENTIAL_TYPE = "primary-secondary-key-pair";
-    private static final String HEADER_NAME = "Ocp-Apim-Subscription-Key";
-    private static final String QUERY_PARAM_NAME = "subscription-key";
+    private static final String DEFAULT_HEADER_NAME = "Ocp-Apim-Subscription-Key";
+    private static final String DEFAULT_QUERY_PARAM_NAME = "subscription-key";
 
     private String resourceGroup;
     private String serviceName;
@@ -124,6 +123,9 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             // Extract Azure API ID from reference artifact
             String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
 
+            // Fetch live subscription key configuration from Azure API
+            AzureSubscriptionKeyConfig keyConfig = fetchSubscriptionKeyConfig(azureApiId);
+
             // Generate subscription name using WSO2 pattern
             String subscriptionName = generateSubscriptionName(context);
             String displayName = generateDisplayName(context);
@@ -164,8 +166,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             }
 
             PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
-                HEADER_NAME,
-                QUERY_PARAM_NAME,
+                keyConfig.headerName,
+                keyConfig.queryParamName,
                 keys.primaryKey(),
                 keys.secondaryKey(),
                 createdTime
@@ -177,9 +179,12 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction and reference artifact
-            InvocationInstruction instruction = getInvocationInstruction(context);
-            String referenceArtifact = buildReferenceArtifact(credential, instruction);
+            // Build invocation instruction and reference artifact — prefer snapshot over live gateway call
+            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+            if (instruction == null) {
+                instruction = getInvocationInstruction(context, keyConfig);
+            }
+            String referenceArtifact = buildReferenceArtifact(credential, instruction, keyConfig);
 
             if (log.isDebugEnabled()) {
                 log.debug("Subscription credential created successfully for: " + subscriptionName);
@@ -216,6 +221,13 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
                 throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
             }
 
+            // Extract subscription key config from stored artifact, or fetch live
+            AzureSubscriptionKeyConfig keyConfig = extractSubscriptionKeyConfigFromArtifact(context);
+            if (keyConfig == null) {
+                String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+                keyConfig = fetchSubscriptionKeyConfig(azureApiId);
+            }
+
             // Regenerate both primary and secondary keys using Azure SDK's built-in methods
             manager.subscriptions().regeneratePrimaryKey(resourceGroup, serviceName, externalSubscriptionId);
             manager.subscriptions().regenerateSecondaryKey(resourceGroup, serviceName, externalSubscriptionId);
@@ -238,8 +250,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             }
 
             PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
-                HEADER_NAME,
-                QUERY_PARAM_NAME,
+                keyConfig.headerName,
+                keyConfig.queryParamName,
                 keys.primaryKey(),
                 keys.secondaryKey(),
                 createdTime
@@ -251,9 +263,12 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction and reference artifact
-            InvocationInstruction instruction = getInvocationInstruction(context);
-            String referenceArtifact = buildReferenceArtifact(credential, instruction);
+            // Build invocation instruction and reference artifact — prefer snapshot over live gateway call
+            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+            if (instruction == null) {
+                instruction = getInvocationInstruction(context, keyConfig);
+            }
+            String referenceArtifact = buildReferenceArtifact(credential, instruction, keyConfig);
 
             if (log.isDebugEnabled()) {
                 log.debug("Credential regenerated successfully for: " + externalSubscriptionId);
@@ -302,19 +317,14 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     /**
      * Generates invocation instruction for the Azure API.
+     * Uses the actual subscription key parameter names configured on the Azure API.
+     *
+     * @param context   The subscription context
+     * @param keyConfig The subscription key configuration fetched from Azure API
+     * @return The invocation instruction
      */
-    /**
-     * Generates invocation instruction for the Azure API.
-     * 
-     * Azure API Management has a fixed authentication pattern:
-     * - Header name: "Ocp-Apim-Subscription-Key" (Azure standard, not configurable)
-     * - Query parameter name: "subscription-key" (Azure standard, not configurable)
-     * - Both methods are ALWAYS enabled (Azure's built-in behavior)
-     * 
-     * This is determined by Azure APIM's architecture, not runtime configuration.
-     * See: https://learn.microsoft.com/en-us/azure/api-management/api-management-subscriptions
-     */
-    private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context)
+    private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context,
+                                                           AzureSubscriptionKeyConfig keyConfig)
             throws APIManagementException {
         if (log.isDebugEnabled()) {
             log.debug("Generating invocation instruction for API: " + context.getApiName());
@@ -347,25 +357,25 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             // Use the retrieved API path, or fall back to the API name
             String basePath = apiPath != null ? "/" + apiPath : "/" + apiName;
 
-            // Generate curl examples for both header and query parameter methods
+            // Generate curl examples using actual configured key names
             String curlExampleHeader = String.format(
                 "curl -X GET \"%s%s" + "\"{path} -H \"%s: {YOUR_SUBSCRIPTION_KEY}\"",
-                baseUrl, basePath, HEADER_NAME);
+                baseUrl, basePath, keyConfig.headerName);
 
             String curlExampleQuery = String.format(
                 "curl -X GET \"%s%s" + "\"{path}?%s={YOUR_SUBSCRIPTION_KEY}\"",
-                baseUrl, basePath, QUERY_PARAM_NAME);
+                baseUrl, basePath, keyConfig.queryParamName);
 
             // Add notes about alternative query parameter option
             String notes = String.format(
                     "You can pass the subscription key either in the '%s' header or as a '%s' query parameter.",
-                    HEADER_NAME, QUERY_PARAM_NAME);
+                    keyConfig.headerName, keyConfig.queryParamName);
 
             ApiKeyInvocation invBody = new ApiKeyInvocation();
             invBody.setHeaderEnabled(true);
             invBody.setQueryParamEnabled(true);
-            invBody.setHeaderName(HEADER_NAME);
-            invBody.setQueryParamName(QUERY_PARAM_NAME);
+            invBody.setHeaderName(keyConfig.headerName);
+            invBody.setQueryParamName(keyConfig.queryParamName);
             invBody.setBaseUrl(baseUrl);
             invBody.setBasePath(basePath);
             invBody.setCurlExampleHeader(curlExampleHeader);
@@ -392,20 +402,30 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             boolean includeFullCredentials) throws APIManagementException {
 
         FederatedCredential credential;
+        // Extract subscription key config for live invocation instruction
+        AzureSubscriptionKeyConfig keyConfig = extractSubscriptionKeyConfigFromArtifact(context);
+
         if (includeFullCredentials) {
             // First verify gateway supports retrieval
             FederatedCredential maskedCred = extractCredentialFromReferenceArtifact(context);
             if (maskedCred == null || !maskedCred.isValueRetrievable()) {
                 throw new APIManagementException("This gateway does not support credential retrieval");
             }
-            credential = retrieveFullCredential(context);
+            credential = retrieveFullCredential(context, keyConfig);
         } else {
             credential = extractCredentialFromReferenceArtifact(context);
             credential.setExternalSubscriptionId(context.getExternalSubscriptionId());
             credential.setMasked(true);
         }
 
-        InvocationInstruction instruction = getInvocationInstruction(context);
+        InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+        if (instruction == null) {
+            if (keyConfig == null) {
+                String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+                keyConfig = fetchSubscriptionKeyConfig(azureApiId);
+            }
+            instruction = getInvocationInstruction(context, keyConfig);
+        }
 
         return AgentOperationResult.builder()
                 .credential(credential)
@@ -416,7 +436,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     /**
      * Retrieves the full credential value from Azure APIM.
      */
-    private FederatedCredential retrieveFullCredential(FederatedSubscriptionContext context)
+    private FederatedCredential retrieveFullCredential(FederatedSubscriptionContext context,
+                                                       AzureSubscriptionKeyConfig keyConfig)
             throws APIManagementException {
         String externalSubscriptionId = context.getExternalSubscriptionId();
         if (log.isDebugEnabled()) {
@@ -430,6 +451,12 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
             if (subscription == null) {
                 throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
+            }
+
+            // Fetch live config if not provided
+            if (keyConfig == null) {
+                String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+                keyConfig = fetchSubscriptionKeyConfig(azureApiId);
             }
 
             // Retrieve the subscription keys
@@ -446,8 +473,8 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             }
 
             PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
-                HEADER_NAME,
-                QUERY_PARAM_NAME,
+                keyConfig.headerName,
+                keyConfig.queryParamName,
                 keys.primaryKey(),
                 keys.secondaryKey(),
                 createdTime
@@ -473,9 +500,11 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     /**
      * Builds the reference artifact JSON for storage. Agent-internal.
+     * Stores subscription key configuration for use during regeneration and retrieval.
      */
     private String buildReferenceArtifact(FederatedCredential credential,
-                                           InvocationInstruction instruction) {
+                                           InvocationInstruction instruction,
+                                           AzureSubscriptionKeyConfig keyConfig) {
         JsonObject json = new JsonObject();
 
         if (credential != null && credential.getBody() != null) {
@@ -498,6 +527,14 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             invJson.addProperty("schemaName", instruction.getSchemaName());
             invJson.addProperty("body", instruction.getBodyAsJson());
             json.add("invocationInstruction", invJson);
+        }
+
+        // Store subscription key configuration for regeneration/retrieval
+        if (keyConfig != null) {
+            JsonObject keyConfigJson = new JsonObject();
+            keyConfigJson.addProperty("headerName", keyConfig.headerName);
+            keyConfigJson.addProperty("queryParamName", keyConfig.queryParamName);
+            json.add("subscriptionKeyConfig", keyConfigJson);
         }
 
         return json.toString();
@@ -555,7 +592,6 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         return GATEWAY_TYPE;
     }
 
-    @Override
     public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context) 
             throws APIManagementException {
         if (log.isDebugEnabled()) {
@@ -753,30 +789,106 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         return value.replaceAll("[^a-zA-Z0-9-]", "_");
     }
 
-    /**
-     * Truncates a string to the specified length.
-     *
-     * @param value  The value to truncate
-     * @param length The maximum length
-     * @return The truncated value
-     */
-    private String truncate(String value, int length) {
-        if (value == null || value.length() <= length) {
-            return value;
+    @Override
+    public SubscriptionSupportInfo getFederationConfigProvider(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        SubscriptionSupportInfo info = getSubscriptionSupportInfo(context);
+        if (info != null && info.getStatus() == SubscriptionSupportInfo.SubscriptionStatus.SECURED) {
+            try {
+                String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+                AzureSubscriptionKeyConfig keyConfig = fetchSubscriptionKeyConfig(azureApiId);
+                info.setInvocationTemplate(getInvocationInstruction(context, keyConfig));
+            } catch (Exception e) {
+                log.warn("Failed to add invocation template to federation config for API: "
+                        + context.getApiName(), e);
+            }
         }
-        return value.substring(0, length);
+        return info;
     }
 
-    protected String maskCredential(String credentialValue) {
-        if (credentialValue == null || credentialValue.isEmpty()) {
-            return credentialValue;
+    private InvocationInstruction extractInvocationFromSnapshot(FederatedSubscriptionContext context) {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null) {
+            return null;
         }
-        int length = credentialValue.length();
-        int visibleChars = 4;
-        if (length <= visibleChars) {
-            return "•".repeat(length);
+        return snapshot.getInvocationTemplate();
+    }
+
+    /**
+     * Fetches the subscription key parameter names configured on the Azure API.
+     * Azure allows customizing the header name and query parameter name per API.
+     * Falls back to Azure defaults if not configured or on error.
+     */
+    private AzureSubscriptionKeyConfig fetchSubscriptionKeyConfig(String azureApiId)
+            throws APIManagementException {
+        try {
+            String apiName = extractApiNameFromId(azureApiId);
+            ApiContract apiContract = manager.apis().get(resourceGroup, serviceName, apiName);
+
+            String headerName = DEFAULT_HEADER_NAME;
+            String queryParamName = DEFAULT_QUERY_PARAM_NAME;
+
+            if (apiContract != null && apiContract.subscriptionKeyParameterNames() != null) {
+                String configuredHeader = apiContract.subscriptionKeyParameterNames().headerProperty();
+                String configuredQuery = apiContract.subscriptionKeyParameterNames().query();
+                if (configuredHeader != null && !configuredHeader.isEmpty()) {
+                    headerName = configuredHeader;
+                }
+                if (configuredQuery != null && !configuredQuery.isEmpty()) {
+                    queryParamName = configuredQuery;
+                }
+            }
+
+            if (log.isDebugEnabled()) {
+                log.debug("Fetched subscription key config for API " + apiName
+                        + " - header: " + headerName + ", query: " + queryParamName);
+            }
+
+            return new AzureSubscriptionKeyConfig(headerName, queryParamName);
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch subscription key config from Azure, using defaults", e);
+            return new AzureSubscriptionKeyConfig(DEFAULT_HEADER_NAME, DEFAULT_QUERY_PARAM_NAME);
         }
-        int maskLength = Math.min(8, length - visibleChars);
-        return "•".repeat(maskLength) + credentialValue.substring(length - visibleChars);
+    }
+
+    /**
+     * Extracts the stored subscription key configuration from the reference artifact.
+     * Returns null if not found (for backward compatibility with old artifacts).
+     */
+    private AzureSubscriptionKeyConfig extractSubscriptionKeyConfigFromArtifact(
+            FederatedSubscriptionContext context) {
+        try {
+            String artifact = context.getSubscriptionReferenceArtifact();
+            if (artifact == null || artifact.isEmpty()) {
+                return null;
+            }
+            JsonObject json = JsonParser.parseString(artifact).getAsJsonObject();
+            if (!json.has("subscriptionKeyConfig")) {
+                return null;
+            }
+            JsonObject configJson = json.getAsJsonObject("subscriptionKeyConfig");
+            String headerName = configJson.has("headerName")
+                    ? configJson.get("headerName").getAsString() : DEFAULT_HEADER_NAME;
+            String queryParamName = configJson.has("queryParamName")
+                    ? configJson.get("queryParamName").getAsString() : DEFAULT_QUERY_PARAM_NAME;
+            return new AzureSubscriptionKeyConfig(headerName, queryParamName);
+        } catch (Exception e) {
+            log.warn("Failed to extract subscription key config from reference artifact", e);
+            return null;
+        }
+    }
+
+    /**
+     * Holds the subscription key parameter names configured on an Azure API.
+     */
+    private static class AzureSubscriptionKeyConfig {
+        final String headerName;
+        final String queryParamName;
+
+        AzureSubscriptionKeyConfig(String headerName, String queryParamName) {
+            this.headerName = headerName;
+            this.queryParamName = queryParamName;
+        }
     }
 }

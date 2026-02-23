@@ -206,8 +206,11 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // Build invocation instruction with dynamic plugin config
-            InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
+            // Build invocation instruction — prefer stored snapshot over live gateway call
+            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+            if (instruction == null) {
+                instruction = getInvocationInstruction(context, pluginConfig);
+            }
             String referenceArtifact = buildReferenceArtifact(
                     credential, instruction, consumer.getId(), keyAuth.getId(), serviceId, aclGroup,
                     selectedOption, pluginConfig);
@@ -344,9 +347,12 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             credential.setMasked(true);
         }
 
-        // Extract stored plugin config for invocation instruction
-        KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
-        InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
+        // Extract stored plugin config for invocation instruction — prefer snapshot over live call
+        InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+        if (instruction == null) {
+            KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
+            instruction = getInvocationInstruction(context, pluginConfig);
+        }
 
         return AgentOperationResult.builder()
                 .credential(credential)
@@ -368,7 +374,6 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
         }
     }
 
-    @Override
     public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context)
             throws APIManagementException {
         try {
@@ -470,6 +475,30 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     @Override
     public String getGatewayType() {
         return GATEWAY_TYPE;
+    }
+
+    @Override
+    public SubscriptionSupportInfo getFederationConfigProvider(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        SubscriptionSupportInfo info = getSubscriptionSupportInfo(context);
+        if (info != null && info.getStatus() == SubscriptionSupportInfo.SubscriptionStatus.SECURED) {
+            try {
+                String serviceId = resolveServiceId(context.getApiReferenceArtifact());
+                KeyAuthPluginConfig pluginConfig = fetchKeyAuthPluginConfig(serviceId);
+                info.setInvocationTemplate(getInvocationInstruction(context, pluginConfig));
+            } catch (Exception e) {
+                log.warn("Failed to add invocation template to federation config for API: " + context.getApiName(), e);
+            }
+        }
+        return info;
+    }
+
+    private InvocationInstruction extractInvocationFromSnapshot(FederatedSubscriptionContext context) {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null) {
+            return null;
+        }
+        return snapshot.getInvocationTemplate();
     }
 
     // Private helper methods

@@ -153,8 +153,11 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             credential.setValueRetrievable(true);
             credential.setMasked(false);
 
-            // 5. Build invocation instruction
-            InvocationInstruction instruction = getInvocationInstruction(context);
+            // 5. Build invocation instruction — prefer stored snapshot over live gateway call
+            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+            if (instruction == null) {
+                instruction = getInvocationInstruction(context);
+            }
 
             // 6. Build reference artifact (agent-owned, stores selectedOption internally)
             String referenceArtifact = buildReferenceArtifact(credential, instruction, selectedOption);
@@ -285,7 +288,6 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         return instruction;
     }
 
-    @Override
     public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context)
             throws APIManagementException {
         if (log.isDebugEnabled()) {
@@ -434,7 +436,10 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
             credential.setMasked(true);
         }
 
-        InvocationInstruction instruction = getInvocationInstruction(context);
+        InvocationInstruction instruction = extractInvocationFromSnapshot(context);
+        if (instruction == null) {
+            instruction = getInvocationInstruction(context);
+        }
 
         return AgentOperationResult.builder()
                 .credential(credential)
@@ -599,5 +604,23 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
      */
     private String extractAWSApiIdFromReferenceArtifact(String referenceArtifact) throws APIManagementException {
         return org.wso2.aws.client.util.GatewayUtil.getAWSApiIdFromReferenceArtifact(referenceArtifact);
+    }
+
+    @Override
+    public SubscriptionSupportInfo getFederationConfigProvider(FederatedSubscriptionContext context)
+            throws APIManagementException {
+        SubscriptionSupportInfo info = getSubscriptionSupportInfo(context);
+        if (info != null && info.getStatus() == SubscriptionSupportInfo.SubscriptionStatus.SECURED) {
+            info.setInvocationTemplate(getInvocationInstruction(context));
+        }
+        return info;
+    }
+
+    private InvocationInstruction extractInvocationFromSnapshot(FederatedSubscriptionContext context) {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null) {
+            return null;
+        }
+        return snapshot.getInvocationTemplate();
     }
 }
