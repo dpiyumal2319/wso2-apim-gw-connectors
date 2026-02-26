@@ -194,8 +194,6 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
                     api.setAvailableTiers(new HashSet<>(Collections.singleton(new Tier(KongConstants.DEFAULT_TIER))));
 
-                    String selectedAPILevelRateLimitPolicy = null;
-
                     if (svc == null) {
                         log.warn("No service found for API: " + apiName + " (ID: " + apiId + ")");
                         continue; // Skip this API if no service is linked
@@ -211,32 +209,9 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
                             ? pluginsResp.getData() : Collections.<KongPlugin>emptyList();
 
                     for (KongPlugin plugin : plugins) {
-                        String pluginType = plugin.getName();
-
-                        if (KongConstants.KONG_CORS_PLUGIN_TYPE.equals(pluginType)) {
+                        if (KongConstants.KONG_CORS_PLUGIN_TYPE.equals(plugin.getName())) {
                             api.setCorsConfiguration(KongAPIUtil.kongCorsToWso2Cors(plugin));
-                            continue;
                         }
-
-                        if (KongConstants.KONG_RATELIMIT_ADVANCED_PLUGIN_TYPE.equals(
-                                pluginType) && selectedAPILevelRateLimitPolicy == null) {
-                            String p = KongAPIUtil.kongRateLimitingToWso2Policy(plugin);
-                            if (p != null) {
-                                selectedAPILevelRateLimitPolicy = p;
-                            }
-                            continue;
-                        }
-
-                        if (KongConstants.KONG_RATELIMIT_PLUGIN_TYPE.equals(
-                                pluginType) && selectedAPILevelRateLimitPolicy == null) {
-                            String p = KongAPIUtil.kongRateLimitingStandardToWso2Policy(plugin);
-                            if (p != null) {
-                                selectedAPILevelRateLimitPolicy = p;
-                            }
-                        }
-                    }
-                    if (selectedAPILevelRateLimitPolicy != null) {
-                        api.setApiLevelPolicy(selectedAPILevelRateLimitPolicy);
                     }
     DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, gson.toJson(api));
                 retrievedAPIs.add(discoveredAPI);
@@ -301,35 +276,10 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     api.setAvailableTiers(
                             new HashSet<>(java.util.Collections.singleton(new Tier(KongConstants.DEFAULT_TIER))));
 
-                    String selectedAPILevelRateLimitPolicy = null;
-
                     for (KongPlugin plugin : plugins) {
-                        String pluginType = plugin.getName();
-
-                        if (KongConstants.KONG_CORS_PLUGIN_TYPE.equals(pluginType)) {
+                        if (KongConstants.KONG_CORS_PLUGIN_TYPE.equals(plugin.getName())) {
                             api.setCorsConfiguration(KongAPIUtil.kongCorsToWso2Cors(plugin));
-                            continue;
                         }
-
-                        if (KongConstants.KONG_RATELIMIT_ADVANCED_PLUGIN_TYPE.equals(
-                                pluginType) && selectedAPILevelRateLimitPolicy == null) {
-                            String p = KongAPIUtil.kongRateLimitingToWso2Policy(plugin);
-                            if (p != null) {
-                                selectedAPILevelRateLimitPolicy = p;
-                            }
-                            continue;
-                        }
-
-                        if (KongConstants.KONG_RATELIMIT_PLUGIN_TYPE.equals(
-                                pluginType) && selectedAPILevelRateLimitPolicy == null) {
-                            String p = KongAPIUtil.kongRateLimitingStandardToWso2Policy(plugin);
-                            if (p != null) {
-                                selectedAPILevelRateLimitPolicy = p;
-                            }
-                        }
-                    }
-                    if (selectedAPILevelRateLimitPolicy != null) {
-                        api.setApiLevelPolicy(selectedAPILevelRateLimitPolicy);
                     }
                     DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, gson.toJson(api));
                 retrievedAPIs.add(discoveredAPI);

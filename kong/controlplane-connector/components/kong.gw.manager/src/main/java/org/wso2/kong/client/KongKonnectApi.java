@@ -27,6 +27,8 @@ import org.wso2.kong.client.model.KongAPIImplementation;
 import org.wso2.kong.client.model.KongAPISpec;
 import org.wso2.kong.client.model.KongAcl;
 import org.wso2.kong.client.model.KongConsumer;
+import org.wso2.kong.client.model.KongConsumerGroup;
+import org.wso2.kong.client.model.KongConsumerGroupMembership;
 import org.wso2.kong.client.model.KongKeyAuth;
 import org.wso2.kong.client.model.KongListResponse;
 import org.wso2.kong.client.model.KongPlugin;
@@ -123,5 +125,29 @@ public interface KongKonnectApi {
     @Headers({"Accept: application/json", "Content-Type: application/json"})
     KongAcl createAcl(@Param("cpId") String controlPlaneId, @Param("consumerId") String consumerId,
                       KongAcl acl) throws KongGatewayException;
+
+    // Consumer Group management
+
+    @RequestLine("GET /v2/control-planes/{cpId}/core-entities/consumer_groups?size={size}")
+    @Headers({"Accept: application/json"})
+    PagedResponse<KongConsumerGroup> listConsumerGroups(@Param("cpId") String controlPlaneId,
+                                                        @Param("size") int size) throws KongGatewayException;
+
+    @RequestLine("POST /v2/control-planes/{cpId}/core-entities/consumer_groups/{groupId}/consumers")
+    @Headers({"Accept: application/json", "Content-Type: application/json"})
+    void addConsumerToGroup(@Param("cpId") String controlPlaneId, @Param("groupId") String groupId,
+                            KongConsumerGroupMembership membership) throws KongGatewayException;
+
+    @RequestLine("DELETE /v2/control-planes/{cpId}/core-entities/consumer_groups/{groupId}/consumers/{consumerId}")
+    @Headers({"Accept: application/json"})
+    void removeConsumerFromGroup(@Param("cpId") String controlPlaneId, @Param("groupId") String groupId,
+                                 @Param("consumerId") String consumerId) throws KongGatewayException;
+
+    // List plugins bound to a specific consumer group
+    @RequestLine("GET /v2/control-planes/{cpId}/core-entities/consumer_groups/{groupId}/plugins?size={size}")
+    @Headers({"Accept: application/json"})
+    PagedResponse<KongPlugin> listPluginsByConsumerGroupId(@Param("cpId") String controlPlaneId,
+                                                            @Param("groupId") String groupId,
+                                                            @Param("size") int size) throws KongGatewayException;
 
 }

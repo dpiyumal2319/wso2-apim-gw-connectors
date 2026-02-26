@@ -55,4 +55,9 @@ public class KongConstants {
     public static final String DEFAULT_KEY_AUTH_HEADER = "apikey";
     public static final String KONG_PROXY_URL = "proxy_url";
     public static final String CONSUMER_NAME_PREFIX = "wso2_";
+    public static final int DEFAULT_CONSUMER_GROUP_LIST_LIMIT = 1000;
+
+    // Subscription option group IDs
+    public static final String OPTION_GROUP_ACL = "acl-groups";
+    public static final String OPTION_GROUP_CONSUMER_GROUPS = "consumer-groups";
 }

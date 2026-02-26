@@ -43,16 +43,20 @@ import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.VHost;
 import org.wso2.carbon.apimgt.api.model.schema.credential.OpaqueApiKeyCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.ApiKeyInvocation;
-import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan;
-import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
+import org.wso2.carbon.apimgt.api.model.schema.options.OptionGroup;
+import org.wso2.carbon.apimgt.api.model.schema.options.OptionGroups;
+import org.wso2.carbon.apimgt.api.model.schema.options.OptionItem;
 import org.wso2.carbon.apimgt.impl.kmclient.ApacheFeignHttpClient;
 import org.wso2.kong.client.model.KongAPIImplementation;
 import org.wso2.kong.client.model.KongAcl;
 import org.wso2.kong.client.model.KongConsumer;
+import org.wso2.kong.client.model.KongConsumerGroup;
+import org.wso2.kong.client.model.KongConsumerGroupMembership;
 import org.wso2.kong.client.model.KongKeyAuth;
 import org.wso2.kong.client.model.KongListResponse;
 import org.wso2.kong.client.model.KongPlugin;
 import org.wso2.kong.client.model.PagedResponse;
+import org.wso2.kong.client.util.KongAPIUtil;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -171,20 +175,24 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 throw new APIManagementException("Failed to create Kong key-auth credential");
             }
 
-            // Handle ACL group assignment based on subscription options
+            // Parse multi-group selections from selectedOption
+            // Format: {"acl-groups": {"id": "...", "name": "..."}, "consumer-groups": {"id": "...", "name": "..."}}
+            JsonObject selections = null;
+            if (selectedOption != null) {
+                selections = JsonParser.parseString(selectedOption).getAsJsonObject();
+            }
+
+            // Handle ACL group assignment
             String aclGroup = null;
             List<String> aclGroups = detectAclGroups(serviceId);
 
             if (aclGroups != null && !aclGroups.isEmpty()) {
-                if (selectedOption != null) {
-                    // Developer selected a group (multi-group ACL)
-                    JsonObject selected = JsonParser.parseString(selectedOption).getAsJsonObject();
-                    aclGroup = selected.get("id").getAsString();
+                if (selections != null && selections.has(KongConstants.OPTION_GROUP_ACL)) {
+                    aclGroup = selections.getAsJsonObject(KongConstants.OPTION_GROUP_ACL)
+                            .get("id").getAsString();
                 } else if (aclGroups.size() == 1) {
-                    // Single group — auto-assign
                     aclGroup = aclGroups.get(0);
                 } else {
-                    // Multiple groups but no selection — error
                     throw new APIManagementException(
                             "ACL group selection required. This API has multiple access groups.");
                 }
@@ -193,6 +201,22 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 apiGatewayClient.createAcl(controlPlaneId, consumer.getId(), aclRequest);
                 if (log.isDebugEnabled()) {
                     log.debug("Added consumer to ACL group: " + aclGroup);
+                }
+            }
+
+            // Handle Consumer Group assignment (rate limiting tier)
+            String consumerGroupId = null;
+            if (selections != null && selections.has(KongConstants.OPTION_GROUP_CONSUMER_GROUPS)) {
+                consumerGroupId = selections.getAsJsonObject(KongConstants.OPTION_GROUP_CONSUMER_GROUPS)
+                        .get("id").getAsString();
+                try {
+                    apiGatewayClient.addConsumerToGroup(controlPlaneId, consumerGroupId,
+                            new KongConsumerGroupMembership(consumer.getId()));
+                    if (log.isDebugEnabled()) {
+                        log.debug("Added consumer to consumer group: " + consumerGroupId);
+                    }
+                } catch (Exception e) {
+                    log.error("Failed to add consumer to consumer group: " + consumerGroupId, e);
                 }
             }
 
@@ -213,7 +237,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             }
             String referenceArtifact = buildReferenceArtifact(
                     credential, instruction, consumer.getId(), keyAuth.getId(), serviceId, aclGroup,
-                    selectedOption, pluginConfig);
+                    consumerGroupId, selectedOption, pluginConfig);
 
             if (log.isDebugEnabled()) {
                 log.debug("Subscription credential created successfully for: " + consumerUsername);
@@ -245,6 +269,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             String oldKeyAuthId = extractKeyAuthIdFromArtifact(context);
             String serviceId = extractServiceIdFromArtifact(context);
             String aclGroup = extractAclGroupFromArtifact(context);
+            String consumerGroupId = extractConsumerGroupIdFromArtifact(context);
             String selectedOption = extractSelectedOptionFromArtifact(context);
             KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
 
@@ -280,7 +305,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
             String referenceArtifact = buildReferenceArtifact(
                     credential, instruction, consumerId, keyAuth.getId(), serviceId, aclGroup,
-                    selectedOption, pluginConfig);
+                    consumerGroupId, selectedOption, pluginConfig);
 
             if (log.isDebugEnabled()) {
                 log.debug("Credential regenerated successfully for: " + context.getExternalSubscriptionId());
@@ -444,21 +469,8 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 log.debug("API " + context.getApiName() + " has key-auth enabled - SECURED");
             }
 
-            // Build subscription options if multiple ACL groups exist
-            FederatedSubscriptionOptions options = null;
-            if (aclGroups != null && aclGroups.size() > 1) {
-                List<SubscriptionPlan> plans = new ArrayList<>();
-                for (String group : aclGroups) {
-                    plans.add(new SubscriptionPlan(group, group, null));
-                }
-                SubscriptionPlans body = new SubscriptionPlans("Access Group", plans);
-                options = new FederatedSubscriptionOptions();
-                options.setBody(body);
-                
-                if (log.isDebugEnabled()) {
-                    log.debug("Exposing " + aclGroups.size() + " ACL groups as subscription options");
-                }
-            }
+            // Build option groups: ACL groups + consumer groups
+            FederatedSubscriptionOptions options = buildSubscriptionOptions(serviceId, aclGroups);
 
             return new SubscriptionSupportInfo.Builder()
                     .status(SubscriptionSupportInfo.SubscriptionStatus.SECURED)
@@ -565,6 +577,99 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     }
 
     /**
+     * Builds subscription options as an {@link OptionGroups} body containing:
+     * <ul>
+     *   <li>ACL groups — access scoping (required by default when present)</li>
+     *   <li>Consumer groups — rate limiting tiers (required by default when present)</li>
+     * </ul>
+     * Returns {@code null} if no option groups are available.
+     */
+    private FederatedSubscriptionOptions buildSubscriptionOptions(String serviceId, List<String> aclGroups) {
+        List<OptionGroup> groups = new ArrayList<>();
+
+        // ACL groups group
+        if (aclGroups != null && !aclGroups.isEmpty()) {
+            List<OptionItem> aclItems = new ArrayList<>();
+            for (String group : aclGroups) {
+                aclItems.add(new OptionItem(group, group, null));
+            }
+            // Required by default — publisher can relax this via curation
+            groups.add(new OptionGroup(KongConstants.OPTION_GROUP_ACL, "Access Group", true, aclItems));
+            if (log.isDebugEnabled()) {
+                log.debug("Exposing " + aclGroups.size() + " ACL groups as subscription option group");
+            }
+        }
+
+        // Consumer groups (enriched with rate-limit details)
+        try {
+            PagedResponse<KongConsumerGroup> cgResp = apiGatewayClient.listConsumerGroups(
+                    controlPlaneId, KongConstants.DEFAULT_CONSUMER_GROUP_LIST_LIMIT);
+            if (cgResp != null && cgResp.getData() != null && !cgResp.getData().isEmpty()) {
+                List<OptionItem> cgItems = new ArrayList<>();
+                for (KongConsumerGroup cg : cgResp.getData()) {
+                    cgItems.add(buildConsumerGroupOptionItem(cg));
+                }
+                // Required by default — publisher can make optional via curation
+                groups.add(new OptionGroup(KongConstants.OPTION_GROUP_CONSUMER_GROUPS,
+                        "Consumer Group", true, cgItems));
+                if (log.isDebugEnabled()) {
+                    log.debug("Exposing " + cgItems.size() + " consumer groups as subscription option group");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to fetch Kong consumer groups for subscription options, skipping", e);
+        }
+
+        if (groups.isEmpty()) {
+            return null;
+        }
+
+        OptionGroups body = new OptionGroups(groups);
+        FederatedSubscriptionOptions options = new FederatedSubscriptionOptions();
+        options.setBody(body);
+        return options;
+    }
+
+    /**
+     * Builds an OptionItem for a consumer group, enriched with rate-limit details if available.
+     * Fetches the rate-limiting plugin applied to the consumer group and populates
+     * the description and properties fields of the OptionItem.
+     */
+    private OptionItem buildConsumerGroupOptionItem(KongConsumerGroup cg) {
+        KongPlugin rateLimitPlugin = fetchConsumerGroupRateLimitPlugin(cg.getId());
+        String description = rateLimitPlugin != null
+                ? KongAPIUtil.formatRateLimitDescription(rateLimitPlugin) : null;
+        return new OptionItem(cg.getId(), cg.getName(), description);
+    }
+
+    /**
+     * Fetches the rate-limiting plugin applied directly to a consumer group.
+     * Returns the first enabled rate-limiting plugin found, or null if none exists.
+     */
+    private KongPlugin fetchConsumerGroupRateLimitPlugin(String groupId) {
+        try {
+            PagedResponse<KongPlugin> pluginsResp = apiGatewayClient.listPluginsByConsumerGroupId(
+                    controlPlaneId, groupId, KongConstants.DEFAULT_PLUGIN_LIST_LIMIT);
+            if (pluginsResp != null && pluginsResp.getData() != null) {
+                for (KongPlugin plugin : pluginsResp.getData()) {
+                    if (Boolean.TRUE.equals(plugin.getEnabled()) && isRateLimitPlugin(plugin)) {
+                        return plugin;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to fetch rate-limit plugins for consumer group: " + groupId, e);
+        }
+        return null;
+    }
+
+    private static boolean isRateLimitPlugin(KongPlugin plugin) {
+        String name = plugin.getName();
+        return KongConstants.KONG_RATELIMIT_ADVANCED_PLUGIN_TYPE.equals(name)
+                || KongConstants.KONG_RATELIMIT_PLUGIN_TYPE.equals(name);
+    }
+
+    /**
      * Builds dynamic invocation instruction based on key-auth plugin configuration.
      * Uses the actual enabled methods (header/query/body) and key names from Kong.
      */
@@ -627,7 +732,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     }
 
     private String buildReferenceArtifact(FederatedCredential credential, InvocationInstruction instruction,
-            String consumerId, String keyAuthId, String serviceId, String aclGroup,
+            String consumerId, String keyAuthId, String serviceId, String aclGroup, String consumerGroupId,
             String selectedOption, KeyAuthPluginConfig pluginConfig) throws APIManagementException {
         try {
             JsonObject artifact = new JsonObject();
@@ -662,6 +767,9 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             artifact.addProperty("serviceId", serviceId);
             if (aclGroup != null) {
                 artifact.addProperty("aclGroup", aclGroup);
+            }
+            if (consumerGroupId != null) {
+                artifact.addProperty("consumerGroupId", consumerGroupId);
             }
             if (selectedOption != null) {
                 artifact.addProperty("selectedOption", selectedOption);
@@ -801,6 +909,16 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
             return artifact.has("aclGroup") ? artifact.get("aclGroup").getAsString() : null;
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract ACL group from reference artifact", e);
+        }
+    }
+
+    private String extractConsumerGroupIdFromArtifact(FederatedSubscriptionContext context) {
+        try {
+            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            return artifact.has("consumerGroupId") ? artifact.get("consumerGroupId").getAsString() : null;
+        } catch (Exception e) {
+            log.warn("Failed to extract consumer group ID from reference artifact", e);
+            return null;
         }
     }
 

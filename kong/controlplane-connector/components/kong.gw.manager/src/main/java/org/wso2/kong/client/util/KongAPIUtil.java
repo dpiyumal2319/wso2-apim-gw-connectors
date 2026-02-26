@@ -289,6 +289,73 @@ public class KongAPIUtil {
         return null;
     }
 
+    /**
+     * Builds a human-readable rate-limit description from a Kong rate-limiting plugin.
+     * Handles both {@code rate-limiting-advanced} (limit[]/window_size[] arrays)
+     * and standard {@code rate-limiting} (minute/hour/day fields).
+     * <p>
+     * Examples: "100 requests/minute", "1000 requests/minute, 50000 requests/hour"
+     *
+     * @param plugin the Kong rate-limiting plugin (advanced or standard)
+     * @return human-readable description, or {@code null} if plugin is null, disabled, or has no valid limits
+     */
+    public static String formatRateLimitDescription(KongPlugin plugin) {
+        if (plugin == null || plugin.getConfig() == null) {
+            return null;
+        }
+        if (plugin.getEnabled() != null && !plugin.getEnabled()) {
+            return null;
+        }
+
+        List<String> parts = new ArrayList<>();
+        String pluginName = plugin.getName();
+
+        if ("rate-limiting-advanced".equals(pluginName)) {
+            JsonObject cfg = plugin.getConfig();
+            List<Integer> limits = getIntList(cfg, "limit");
+            List<Integer> windows = getIntList(cfg, "window_size");
+            int n = Math.min(limits.size(), windows.size());
+
+            for (int i = 0; i < n; i++) {
+                int limit = limits.get(i) != null ? limits.get(i) : 0;
+                int window = windows.get(i) != null ? windows.get(i) : 0;
+                if (limit > 0 && window > 0) {
+                    parts.add(limit + " requests/" + windowToHumanPeriod(window));
+                }
+            }
+
+        } else if ("rate-limiting".equals(pluginName)) {
+            JsonObject cfg = plugin.getConfig();
+            addStandardLimit(parts, cfg, "second");
+            addStandardLimit(parts, cfg, "minute");
+            addStandardLimit(parts, cfg, "hour");
+            addStandardLimit(parts, cfg, "day");
+            addStandardLimit(parts, cfg, "month");
+            addStandardLimit(parts, cfg, "year");
+        }
+
+        return parts.isEmpty() ? null : String.join(", ", parts);
+    }
+
+    private static String windowToHumanPeriod(int seconds) {
+        switch (seconds) {
+            case 1:       return "second";
+            case 60:      return "minute";
+            case 3600:    return "hour";
+            case 86400:   return "day";
+            case 604800:  return "week";
+            case 2592000: return "month";
+            default:      return seconds + " seconds";
+        }
+    }
+
+    private static void addStandardLimit(List<String> parts, JsonObject cfg, String field) {
+        Integer val = getInt(cfg, field);
+        if (isPositive(val)) {
+            parts.add(val + " requests/" + field);
+        }
+    }
+
     // ---- helpers ----
     private static Integer getInt(JsonObject obj, String key) {
         if (obj == null || !obj.has(key) || obj.get(key).isJsonNull()) {
