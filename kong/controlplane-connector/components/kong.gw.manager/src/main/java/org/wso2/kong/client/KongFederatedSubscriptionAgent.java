@@ -676,7 +676,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private InvocationInstruction getInvocationInstruction(FederatedSubscriptionContext context,
                                                            KeyAuthPluginConfig pluginConfig) {
         String baseUrl = proxyUrl;
-        String basePath = context.getApiContext();
+        String basePath = context.getApiContext() != null ? context.getApiContext() : "";
 
         ApiKeyInvocation invBody = new ApiKeyInvocation();
         invBody.setBaseUrl(baseUrl);
