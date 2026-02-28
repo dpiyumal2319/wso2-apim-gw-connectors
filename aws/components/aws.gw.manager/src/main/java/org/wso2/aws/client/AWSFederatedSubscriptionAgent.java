@@ -182,8 +182,8 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     @Override
     public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
             throws APIManagementException {
-        // 1. Extract selectedOption from old reference artifact (agent's own format)
-        String selectedOption = extractSelectedOptionFromArtifact(context.getSubscriptionReferenceArtifact());
+        // 1. Extract selectedOption from old credential artifact (agent's own format)
+        String selectedOption = extractSelectedOptionFromArtifact(context.getCredentialReferenceArtifact());
 
         // 2. Best-effort delete old subscription
         try {
@@ -196,7 +196,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         // 3. Create new subscription with preserved option
         FederatedSubscriptionContext createCtx = context.toBuilder()
                 .externalSubscriptionId(null)
-                .subscriptionReferenceArtifact(null)
+                .credentialReferenceArtifact(null)
                 .build();
         return createSubscription(createCtx, selectedOption);
     }
@@ -534,7 +534,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
      */
     private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
         FederatedCredential credential = new FederatedCredential();
-        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
+        String subscriptionReferenceArtifact = context.getCredentialReferenceArtifact();
 
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             if (log.isDebugEnabled()) {

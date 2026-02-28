@@ -799,7 +799,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context)
             throws APIManagementException {
         FederatedCredential credential = new FederatedCredential();
-        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
+        String subscriptionReferenceArtifact = context.getCredentialReferenceArtifact();
 
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             if (log.isDebugEnabled()) {
@@ -878,7 +878,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractConsumerIdFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.get("consumerId").getAsString();
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract consumer ID from reference artifact", e);
@@ -887,7 +887,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractKeyAuthIdFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.get("keyAuthId").getAsString();
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract key-auth ID from reference artifact", e);
@@ -896,7 +896,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractServiceIdFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.get("serviceId").getAsString();
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract service ID from reference artifact", e);
@@ -905,7 +905,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractAclGroupFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.has("aclGroup") ? artifact.get("aclGroup").getAsString() : null;
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract ACL group from reference artifact", e);
@@ -914,7 +914,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractConsumerGroupIdFromArtifact(FederatedSubscriptionContext context) {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.has("consumerGroupId") ? artifact.get("consumerGroupId").getAsString() : null;
         } catch (Exception e) {
             log.warn("Failed to extract consumer group ID from reference artifact", e);
@@ -924,7 +924,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractSelectedOptionFromArtifact(FederatedSubscriptionContext context) {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.has("selectedOption") ? artifact.get("selectedOption").getAsString() : null;
         } catch (Exception e) {
             log.warn("Failed to extract selectedOption from reference artifact", e);
@@ -1004,7 +1004,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private KeyAuthPluginConfig extractPluginConfigFromArtifact(FederatedSubscriptionContext context)
             throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             
             if (!artifact.has("pluginConfig")) {
                 // Fallback for old artifacts without stored config - use defaults

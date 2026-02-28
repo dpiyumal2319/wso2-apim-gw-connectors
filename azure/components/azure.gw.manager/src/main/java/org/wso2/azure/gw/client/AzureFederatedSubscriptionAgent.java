@@ -544,7 +544,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
      * Extracts masked credential from the stored reference artifact.
      */
     private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
-        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
+        String subscriptionReferenceArtifact = context.getCredentialReferenceArtifact();
         FederatedCredential credential = new FederatedCredential();
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             return credential;
@@ -859,7 +859,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     private AzureSubscriptionKeyConfig extractSubscriptionKeyConfigFromArtifact(
             FederatedSubscriptionContext context) {
         try {
-            String artifact = context.getSubscriptionReferenceArtifact();
+            String artifact = context.getCredentialReferenceArtifact();
             if (artifact == null || artifact.isEmpty()) {
                 return null;
             }
