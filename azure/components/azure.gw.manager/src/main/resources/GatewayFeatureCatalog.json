@@ -16,12 +16,12 @@
         "supported": true,
         "capabilities": ["list", "search", "import", "pagination"]
       },
-      "federatedSubscription": [
-        {
-          "credentialSchema": "primary-secondary-key-pair",
-          "invocationSchema": "api-key-invocation"
-        }
-      ]
+      "federatedSubscription": {
+        "subcriptionSupport": true,
+        "credentialSchema": "primary-secondary-key-pair",
+        "invocationSchema": "api-key-invocation",
+        "subcriptionOptionsSchema": null
+      }
     }
   }
 }

@@ -24,6 +24,7 @@ import org.wso2.carbon.apimgt.api.model.AgentOperationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
+import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.schema.credential.PrimarySecondaryKeyPairCredential;
@@ -200,90 +201,6 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         } catch (Exception e) {
             log.error("Error creating Azure subscription for: " + context.getSubscriptionUuid(), e);
             throw new APIManagementException("Failed to create subscription in Azure APIM: " + e.getMessage(), e);
-        }
-    }
-
-    @Override
-    public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
-            throws APIManagementException {
-        String externalSubscriptionId = context.getExternalSubscriptionId();
-        
-        if (log.isDebugEnabled()) {
-            log.debug("Regenerating credential for Azure subscription: " + externalSubscriptionId);
-        }
-
-        try {
-            // Verify subscription exists
-            SubscriptionContract subscription = manager.subscriptions()
-                    .get(resourceGroup, serviceName, externalSubscriptionId);
-
-            if (subscription == null) {
-                throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
-            }
-
-            // Extract subscription key config from stored artifact, or fetch live
-            AzureSubscriptionKeyConfig keyConfig = extractSubscriptionKeyConfigFromArtifact(context);
-            if (keyConfig == null) {
-                String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
-                keyConfig = fetchSubscriptionKeyConfig(azureApiId);
-            }
-
-            // Regenerate both primary and secondary keys using Azure SDK's built-in methods
-            manager.subscriptions().regeneratePrimaryKey(resourceGroup, serviceName, externalSubscriptionId);
-            manager.subscriptions().regenerateSecondaryKey(resourceGroup, serviceName, externalSubscriptionId);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Keys regenerated successfully for subscription: " + externalSubscriptionId);
-            }
-
-            // Retrieve the new keys
-            SubscriptionKeysContract keys = manager.subscriptions()
-                    .listSecrets(resourceGroup, serviceName, externalSubscriptionId);
-
-            // Build typed credential body
-            String createdTime = subscription.createdDate() != null 
-                ? subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) 
-                : null;
-
-            if (keys == null || keys.primaryKey() == null || keys.secondaryKey() == null) {
-                throw new APIManagementException("Failed to retrieve regenerated subscription keys from Azure");
-            }
-
-            PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
-                keyConfig.headerName,
-                keyConfig.queryParamName,
-                keys.primaryKey(),
-                keys.secondaryKey(),
-                createdTime
-            );
-
-            FederatedCredential credential = new FederatedCredential();
-            credential.setBody(credBody);
-            credential.setExternalSubscriptionId(externalSubscriptionId);
-            credential.setValueRetrievable(true);
-            credential.setMasked(false);
-
-            // Build invocation instruction and reference artifact — prefer snapshot over live gateway call
-            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
-            if (instruction == null) {
-                instruction = getInvocationInstruction(context, keyConfig);
-            }
-            String referenceArtifact = buildReferenceArtifact(credential, instruction, keyConfig);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Credential regenerated successfully for: " + externalSubscriptionId);
-            }
-
-            return AgentOperationResult.builder()
-                    .credential(credential)
-                    .instruction(instruction)
-                    .referenceArtifact(referenceArtifact)
-                    .externalSubscriptionId(externalSubscriptionId)
-                    .build();
-
-        } catch (Exception e) {
-            log.error("Error regenerating credential for subscription: " + externalSubscriptionId, e);
-            throw new APIManagementException("Failed to regenerate credential in Azure APIM: " + e.getMessage(), e);
         }
     }
 
@@ -500,7 +417,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     /**
      * Builds the reference artifact JSON for storage. Agent-internal.
-     * Stores subscription key configuration for use during regeneration and retrieval.
+     * Stores subscription key configuration for use during credential retrieval.
      */
     private String buildReferenceArtifact(FederatedCredential credential,
                                            InvocationInstruction instruction,
@@ -529,7 +446,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             json.add("invocationInstruction", invJson);
         }
 
-        // Store subscription key configuration for regeneration/retrieval
+        // Store subscription key configuration for credential retrieval
         if (keyConfig != null) {
             JsonObject keyConfigJson = new JsonObject();
             keyConfigJson.addProperty("headerName", keyConfig.headerName);
@@ -590,6 +507,26 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     @Override
     public String getGatewayType() {
         return GATEWAY_TYPE;
+    }
+
+    @Override
+    public boolean isSubscriptionSupport() {
+        try {
+            GatewayPortalConfiguration featureCatalog = new AzureGatewayConfiguration().getGatewayFeatureCatalog();
+            Object supportedFeatures = featureCatalog.getSupportedFeatures();
+            if (supportedFeatures instanceof JsonObject) {
+                JsonObject featuresJson = (JsonObject) supportedFeatures;
+                if (featuresJson.has("federatedSubscription")
+                        && featuresJson.get("federatedSubscription").isJsonObject()) {
+                    JsonObject federatedSubscriptionConfig = featuresJson.getAsJsonObject("federatedSubscription");
+                    return federatedSubscriptionConfig.has("subcriptionSupport")
+                            && federatedSubscriptionConfig.get("subcriptionSupport").getAsBoolean();
+                }
+            }
+        } catch (APIManagementException e) {
+            log.warn("Error while resolving Azure subscription support from GatewayFeatureCatalog", e);
+        }
+        return false;
     }
 
     public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context) 
