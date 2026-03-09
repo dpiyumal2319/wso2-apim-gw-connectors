@@ -200,6 +200,46 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         }
     }
 
+    public void validateSelectedOption(FederatedSubscriptionContext context, String selectedOption)
+            throws APIManagementException {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null || snapshot.getSubscriptionOptions() == null
+                || !(snapshot.getSubscriptionOptions().getBody() instanceof SubscriptionPlans)) {
+            return;
+        }
+
+        SubscriptionPlans plansBody = (SubscriptionPlans) snapshot.getSubscriptionOptions().getBody();
+        List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> plans = plansBody.getPlans();
+        if (plans == null || plans.isEmpty()) {
+            return;
+        }
+
+        if (StringUtils.isBlank(selectedOption)) {
+            throw new APIManagementException("Subscription option (usage plan) must be selected for AWS APIs");
+        }
+
+        String selectedPlanId;
+        try {
+            JsonObject selected = JsonParser.parseString(selectedOption).getAsJsonObject();
+            if (!selected.has("id") || selected.get("id").isJsonNull()) {
+                throw new APIManagementException("Selected subscription option must include plan id");
+            }
+            selectedPlanId = selected.get("id").getAsString();
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Invalid selected subscription option payload", e);
+        }
+
+        for (org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan plan : plans) {
+            if (plan != null && plan.isEnabled() && selectedPlanId.equals(plan.getId())) {
+                return;
+            }
+        }
+
+        throw new APIManagementException("Invalid or disabled subscription option selected");
+    }
+
     @Override
     public void deleteSubscription(FederatedSubscriptionContext context) throws APIManagementException {
         try {

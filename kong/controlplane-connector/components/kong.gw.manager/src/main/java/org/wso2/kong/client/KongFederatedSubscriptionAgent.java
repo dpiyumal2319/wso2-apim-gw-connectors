@@ -61,6 +61,7 @@ import org.wso2.kong.client.util.KongAPIUtil;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Kong Konnect Federated Subscription Agent.
@@ -254,6 +255,66 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
         } catch (Exception e) {
             log.error("Error creating Kong subscription for: " + context.getSubscriptionUuid(), e);
             throw new APIManagementException("Failed to create subscription in Kong: " + e.getMessage(), e);
+        }
+    }
+
+    public void validateSelectedOption(FederatedSubscriptionContext context, String selectedOption)
+            throws APIManagementException {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null || snapshot.getSubscriptionOptions() == null
+                || !(snapshot.getSubscriptionOptions().getBody() instanceof OptionGroups)) {
+            return;
+        }
+
+        OptionGroups optionGroups = (OptionGroups) snapshot.getSubscriptionOptions().getBody();
+        List<OptionGroup> groups = optionGroups.getGroups();
+        if (groups == null || groups.isEmpty()) {
+            return;
+        }
+
+        JsonObject selections = null;
+        if (selectedOption != null && !selectedOption.trim().isEmpty()) {
+            try {
+                selections = JsonParser.parseString(selectedOption).getAsJsonObject();
+            } catch (Exception e) {
+                throw new APIManagementException("Invalid selected subscription option payload", e);
+            }
+        }
+
+        for (OptionGroup group : groups) {
+            if (group == null || group.getGroupId() == null) {
+                continue;
+            }
+            List<OptionItem> enabledItems = group.getItems() == null ? new ArrayList<>()
+                    : group.getItems().stream().filter(OptionItem::isEnabled).collect(Collectors.toList());
+            if (enabledItems.isEmpty()) {
+                continue;
+            }
+
+            JsonObject selectedGroup = null;
+            if (selections != null && selections.has(group.getGroupId())
+                    && selections.get(group.getGroupId()).isJsonObject()) {
+                selectedGroup = selections.getAsJsonObject(group.getGroupId());
+            }
+
+            if (selectedGroup == null) {
+                if (group.isRequired() && enabledItems.size() > 1) {
+                    throw new APIManagementException(
+                            "Selection required for option group: " + group.getGroupId());
+                }
+                continue;
+            }
+
+            if (!selectedGroup.has("id") || selectedGroup.get("id").isJsonNull()) {
+                throw new APIManagementException(
+                        "Selected option for group " + group.getGroupId() + " must include item id");
+            }
+            String selectedId = selectedGroup.get("id").getAsString();
+            boolean exists = enabledItems.stream().anyMatch(item -> selectedId.equals(item.getId()));
+            if (!exists) {
+                throw new APIManagementException("Invalid or disabled selected option '" + selectedId
+                        + "' for group: " + group.getGroupId());
+            }
         }
     }
 

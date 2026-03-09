@@ -29,6 +29,8 @@ import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.schema.credential.PrimarySecondaryKeyPairCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.ApiKeyInvocation;
+import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
+
 
 
 import java.time.format.DateTimeFormatter;
@@ -202,6 +204,46 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             log.error("Error creating Azure subscription for: " + context.getSubscriptionUuid(), e);
             throw new APIManagementException("Failed to create subscription in Azure APIM: " + e.getMessage(), e);
         }
+    }
+
+    public void validateSelectedOption(FederatedSubscriptionContext context, String selectedOption)
+            throws APIManagementException {
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null || snapshot.getSubscriptionOptions() == null
+                || !(snapshot.getSubscriptionOptions().getBody() instanceof SubscriptionPlans)) {
+            return;
+        }
+
+        SubscriptionPlans plansBody = (SubscriptionPlans) snapshot.getSubscriptionOptions().getBody();
+        java.util.List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> plans = plansBody.getPlans();
+        if (plans == null || plans.isEmpty()) {
+            return;
+        }
+
+        if (selectedOption == null || selectedOption.trim().isEmpty()) {
+            throw new APIManagementException("Subscription option must be selected");
+        }
+
+        String selectedPlanId;
+        try {
+            JsonObject selected = JsonParser.parseString(selectedOption).getAsJsonObject();
+            if (!selected.has("id") || selected.get("id").isJsonNull()) {
+                throw new APIManagementException("Selected subscription option must include plan id");
+            }
+            selectedPlanId = selected.get("id").getAsString();
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Invalid selected subscription option payload", e);
+        }
+
+        for (org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan plan : plans) {
+            if (plan != null && plan.isEnabled() && selectedPlanId.equals(plan.getId())) {
+                return;
+            }
+        }
+
+        throw new APIManagementException("Invalid or disabled subscription option selected");
     }
 
     @Override
