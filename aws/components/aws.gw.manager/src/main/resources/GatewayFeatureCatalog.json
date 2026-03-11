@@ -23,12 +23,12 @@
       ],
       "endpointSecurity": [],
       "tryout": [],
-      "federatedSubscription": [
-        {
-          "credentialSchema": "opaque-api-key",
-          "invocationSchema": "api-key-invocation"
-        }
-      ]
+      "federatedSubscription": {
+        "subcriptionSupport": true,
+        "credentialSchema": "opaque-api-key",
+        "invocationSchema": "api-key-invocation",
+        "subcriptionOptionsSchema": "subscription-plans"
+      }
     }
   }
 }

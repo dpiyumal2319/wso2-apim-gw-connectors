@@ -29,7 +29,12 @@
       ],
       "endpointSecurity": [],
       "tryout": [],
-      "federatedSubscription": []
+      "federatedSubscription": {
+        "subcriptionSupport": false,
+        "credentialSchema": null,
+        "invocationSchema": null,
+        "subcriptionOptionsSchema": null
+      }
     }
   }
 }

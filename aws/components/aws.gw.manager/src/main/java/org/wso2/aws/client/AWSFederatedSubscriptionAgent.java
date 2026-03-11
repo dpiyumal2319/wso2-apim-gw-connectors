@@ -33,6 +33,7 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionOptions;
+import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -79,6 +80,26 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
     @Override
     public String getGatewayType() {
         return AWSConstants.AWS_TYPE;
+    }
+
+    @Override
+    public boolean isSubscriptionSupport() {
+        try {
+            GatewayPortalConfiguration featureCatalog = new AWSGatewayConfiguration().getGatewayFeatureCatalog();
+            Object supportedFeatures = featureCatalog.getSupportedFeatures();
+            if (supportedFeatures instanceof JsonObject) {
+                JsonObject featuresJson = (JsonObject) supportedFeatures;
+                if (featuresJson.has("federatedSubscription")
+                        && featuresJson.get("federatedSubscription").isJsonObject()) {
+                    JsonObject federatedSubscriptionConfig = featuresJson.getAsJsonObject("federatedSubscription");
+                    return federatedSubscriptionConfig.has("subcriptionSupport")
+                            && federatedSubscriptionConfig.get("subcriptionSupport").getAsBoolean();
+                }
+            }
+        } catch (APIManagementException e) {
+            log.warn("Error while resolving AWS subscription support from GatewayFeatureCatalog", e);
+        }
+        return false;
     }
 
     @Override
@@ -179,44 +200,44 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
         }
     }
 
-    @Override
-    public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
+    public void validateSelectedOption(FederatedSubscriptionContext context, String selectedOption)
             throws APIManagementException {
-        // 1. Extract selectedOption from old reference artifact (agent's own format)
-        String selectedOption = extractSelectedOptionFromArtifact(context.getSubscriptionReferenceArtifact());
-
-        // 2. Best-effort delete old subscription
-        try {
-            deleteSubscription(context);
-        } catch (APIManagementException e) {
-            log.warn("Failed to delete old subscription during regeneration: " + context.getExternalSubscriptionId()
-                    + ". Proceeding with create.", e);
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null || snapshot.getSubscriptionOptions() == null
+                || !(snapshot.getSubscriptionOptions().getBody() instanceof SubscriptionPlans)) {
+            return;
         }
 
-        // 3. Create new subscription with preserved option
-        FederatedSubscriptionContext createCtx = context.toBuilder()
-                .externalSubscriptionId(null)
-                .subscriptionReferenceArtifact(null)
-                .build();
-        return createSubscription(createCtx, selectedOption);
-    }
-
-    /**
-     * Extracts the "selectedOption" JSON string from a subscription reference artifact.
-     */
-    private String extractSelectedOptionFromArtifact(String referenceArtifact) {
-        if (referenceArtifact == null || referenceArtifact.isEmpty()) {
-            return null;
+        SubscriptionPlans plansBody = (SubscriptionPlans) snapshot.getSubscriptionOptions().getBody();
+        List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> plans = plansBody.getPlans();
+        if (plans == null || plans.isEmpty()) {
+            return;
         }
+
+        if (StringUtils.isBlank(selectedOption)) {
+            throw new APIManagementException("Subscription option (usage plan) must be selected for AWS APIs");
+        }
+
+        String selectedPlanId;
         try {
-            JsonObject json = JsonParser.parseString(referenceArtifact).getAsJsonObject();
-            if (json.has("selectedOption")) {
-                return json.get("selectedOption").getAsString();
+            JsonObject selected = JsonParser.parseString(selectedOption).getAsJsonObject();
+            if (!selected.has("id") || selected.get("id").isJsonNull()) {
+                throw new APIManagementException("Selected subscription option must include plan id");
             }
+            selectedPlanId = selected.get("id").getAsString();
+        } catch (APIManagementException e) {
+            throw e;
         } catch (Exception e) {
-            log.warn("Failed to extract selectedOption from reference artifact", e);
+            throw new APIManagementException("Invalid selected subscription option payload", e);
         }
-        return null;
+
+        for (org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan plan : plans) {
+            if (plan != null && plan.isEnabled() && selectedPlanId.equals(plan.getId())) {
+                return;
+            }
+        }
+
+        throw new APIManagementException("Invalid or disabled subscription option selected");
     }
 
     @Override
@@ -493,7 +514,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
 
     /**
      * Builds the reference artifact JSON for storage. Agent-internal — stores
-     * selectedOption so it can be extracted on regeneration.
+     * selectedOption for future create/delete/retrieve flows.
      */
     private String buildReferenceArtifact(FederatedCredential credential,
                                            InvocationInstruction instruction,
@@ -534,7 +555,7 @@ public class AWSFederatedSubscriptionAgent implements FederatedSubscriptionAgent
      */
     private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
         FederatedCredential credential = new FederatedCredential();
-        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
+        String subscriptionReferenceArtifact = context.getCredentialReferenceArtifact();
 
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             if (log.isDebugEnabled()) {

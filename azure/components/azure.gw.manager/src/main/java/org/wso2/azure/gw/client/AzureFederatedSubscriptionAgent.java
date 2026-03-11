@@ -24,10 +24,13 @@ import org.wso2.carbon.apimgt.api.model.AgentOperationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
+import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.schema.credential.PrimarySecondaryKeyPairCredential;
 import org.wso2.carbon.apimgt.api.model.schema.invocation.ApiKeyInvocation;
+import org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlans;
+
 
 
 import java.time.format.DateTimeFormatter;
@@ -203,88 +206,44 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
         }
     }
 
-    @Override
-    public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
+    public void validateSelectedOption(FederatedSubscriptionContext context, String selectedOption)
             throws APIManagementException {
-        String externalSubscriptionId = context.getExternalSubscriptionId();
-        
-        if (log.isDebugEnabled()) {
-            log.debug("Regenerating credential for Azure subscription: " + externalSubscriptionId);
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null || snapshot.getSubscriptionOptions() == null
+                || !(snapshot.getSubscriptionOptions().getBody() instanceof SubscriptionPlans)) {
+            return;
         }
 
+        SubscriptionPlans plansBody = (SubscriptionPlans) snapshot.getSubscriptionOptions().getBody();
+        java.util.List<org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan> plans = plansBody.getPlans();
+        if (plans == null || plans.isEmpty()) {
+            return;
+        }
+
+        if (selectedOption == null || selectedOption.trim().isEmpty()) {
+            throw new APIManagementException("Subscription option must be selected");
+        }
+
+        String selectedPlanId;
         try {
-            // Verify subscription exists
-            SubscriptionContract subscription = manager.subscriptions()
-                    .get(resourceGroup, serviceName, externalSubscriptionId);
-
-            if (subscription == null) {
-                throw new APIManagementException("Subscription not found: " + externalSubscriptionId);
+            JsonObject selected = JsonParser.parseString(selectedOption).getAsJsonObject();
+            if (!selected.has("id") || selected.get("id").isJsonNull()) {
+                throw new APIManagementException("Selected subscription option must include plan id");
             }
-
-            // Extract subscription key config from stored artifact, or fetch live
-            AzureSubscriptionKeyConfig keyConfig = extractSubscriptionKeyConfigFromArtifact(context);
-            if (keyConfig == null) {
-                String azureApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
-                keyConfig = fetchSubscriptionKeyConfig(azureApiId);
-            }
-
-            // Regenerate both primary and secondary keys using Azure SDK's built-in methods
-            manager.subscriptions().regeneratePrimaryKey(resourceGroup, serviceName, externalSubscriptionId);
-            manager.subscriptions().regenerateSecondaryKey(resourceGroup, serviceName, externalSubscriptionId);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Keys regenerated successfully for subscription: " + externalSubscriptionId);
-            }
-
-            // Retrieve the new keys
-            SubscriptionKeysContract keys = manager.subscriptions()
-                    .listSecrets(resourceGroup, serviceName, externalSubscriptionId);
-
-            // Build typed credential body
-            String createdTime = subscription.createdDate() != null 
-                ? subscription.createdDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) 
-                : null;
-
-            if (keys == null || keys.primaryKey() == null || keys.secondaryKey() == null) {
-                throw new APIManagementException("Failed to retrieve regenerated subscription keys from Azure");
-            }
-
-            PrimarySecondaryKeyPairCredential credBody = new PrimarySecondaryKeyPairCredential(
-                keyConfig.headerName,
-                keyConfig.queryParamName,
-                keys.primaryKey(),
-                keys.secondaryKey(),
-                createdTime
-            );
-
-            FederatedCredential credential = new FederatedCredential();
-            credential.setBody(credBody);
-            credential.setExternalSubscriptionId(externalSubscriptionId);
-            credential.setValueRetrievable(true);
-            credential.setMasked(false);
-
-            // Build invocation instruction and reference artifact — prefer snapshot over live gateway call
-            InvocationInstruction instruction = extractInvocationFromSnapshot(context);
-            if (instruction == null) {
-                instruction = getInvocationInstruction(context, keyConfig);
-            }
-            String referenceArtifact = buildReferenceArtifact(credential, instruction, keyConfig);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Credential regenerated successfully for: " + externalSubscriptionId);
-            }
-
-            return AgentOperationResult.builder()
-                    .credential(credential)
-                    .instruction(instruction)
-                    .referenceArtifact(referenceArtifact)
-                    .externalSubscriptionId(externalSubscriptionId)
-                    .build();
-
+            selectedPlanId = selected.get("id").getAsString();
+        } catch (APIManagementException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("Error regenerating credential for subscription: " + externalSubscriptionId, e);
-            throw new APIManagementException("Failed to regenerate credential in Azure APIM: " + e.getMessage(), e);
+            throw new APIManagementException("Invalid selected subscription option payload", e);
         }
+
+        for (org.wso2.carbon.apimgt.api.model.schema.options.SubscriptionPlan plan : plans) {
+            if (plan != null && plan.isEnabled() && selectedPlanId.equals(plan.getId())) {
+                return;
+            }
+        }
+
+        throw new APIManagementException("Invalid or disabled subscription option selected");
     }
 
     @Override
@@ -500,7 +459,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
 
     /**
      * Builds the reference artifact JSON for storage. Agent-internal.
-     * Stores subscription key configuration for use during regeneration and retrieval.
+     * Stores subscription key configuration for use during credential retrieval.
      */
     private String buildReferenceArtifact(FederatedCredential credential,
                                            InvocationInstruction instruction,
@@ -529,7 +488,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
             json.add("invocationInstruction", invJson);
         }
 
-        // Store subscription key configuration for regeneration/retrieval
+        // Store subscription key configuration for credential retrieval
         if (keyConfig != null) {
             JsonObject keyConfigJson = new JsonObject();
             keyConfigJson.addProperty("headerName", keyConfig.headerName);
@@ -544,7 +503,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
      * Extracts masked credential from the stored reference artifact.
      */
     private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context) {
-        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
+        String subscriptionReferenceArtifact = context.getCredentialReferenceArtifact();
         FederatedCredential credential = new FederatedCredential();
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             return credential;
@@ -590,6 +549,26 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     @Override
     public String getGatewayType() {
         return GATEWAY_TYPE;
+    }
+
+    @Override
+    public boolean isSubscriptionSupport() {
+        try {
+            GatewayPortalConfiguration featureCatalog = new AzureGatewayConfiguration().getGatewayFeatureCatalog();
+            Object supportedFeatures = featureCatalog.getSupportedFeatures();
+            if (supportedFeatures instanceof JsonObject) {
+                JsonObject featuresJson = (JsonObject) supportedFeatures;
+                if (featuresJson.has("federatedSubscription")
+                        && featuresJson.get("federatedSubscription").isJsonObject()) {
+                    JsonObject federatedSubscriptionConfig = featuresJson.getAsJsonObject("federatedSubscription");
+                    return federatedSubscriptionConfig.has("subcriptionSupport")
+                            && federatedSubscriptionConfig.get("subcriptionSupport").getAsBoolean();
+                }
+            }
+        } catch (APIManagementException e) {
+            log.warn("Error while resolving Azure subscription support from GatewayFeatureCatalog", e);
+        }
+        return false;
     }
 
     public SubscriptionSupportInfo getSubscriptionSupportInfo(FederatedSubscriptionContext context) 
@@ -859,7 +838,7 @@ public class AzureFederatedSubscriptionAgent implements FederatedSubscriptionAge
     private AzureSubscriptionKeyConfig extractSubscriptionKeyConfigFromArtifact(
             FederatedSubscriptionContext context) {
         try {
-            String artifact = context.getSubscriptionReferenceArtifact();
+            String artifact = context.getCredentialReferenceArtifact();
             if (artifact == null || artifact.isEmpty()) {
                 return null;
             }

@@ -47,7 +47,7 @@ public class KongConstants {
     public static final int DEFAULT_ROUTE_LIST_LIMIT = 1000;
     public static final String DEFAULT_API_PROVIDER = "admin";
     public static final String DEFAULT_API_VERSION = "v1";
-    public static final String DEFAULT_TIER = "Unlimited";
+    public static final String DEFAULT_TIER = "DefaultSubscriptionless";
     public static final String DEFAULT_GATEWAY_VENDOR = "external";
     public static final String DEFAULT_VHOST = "example.com";
 

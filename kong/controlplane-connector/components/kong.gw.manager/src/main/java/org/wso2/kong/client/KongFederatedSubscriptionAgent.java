@@ -38,6 +38,7 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedCredential;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionContext;
 import org.wso2.carbon.apimgt.api.model.FederatedSubscriptionOptions;
+import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 import org.wso2.carbon.apimgt.api.model.InvocationInstruction;
 import org.wso2.carbon.apimgt.api.model.SubscriptionSupportInfo;
 import org.wso2.carbon.apimgt.api.model.VHost;
@@ -60,6 +61,7 @@ import org.wso2.kong.client.util.KongAPIUtil;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Kong Konnect Federated Subscription Agent.
@@ -256,71 +258,63 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
         }
     }
 
-    @Override
-    public AgentOperationResult regenerateCredential(FederatedSubscriptionContext context)
+    public void validateSelectedOption(FederatedSubscriptionContext context, String selectedOption)
             throws APIManagementException {
-        if (log.isDebugEnabled()) {
-            log.debug("Regenerating credential for Kong consumer: " + context.getExternalSubscriptionId());
+        SubscriptionSupportInfo snapshot = context.getFederationConfigSnapshot();
+        if (snapshot == null || snapshot.getSubscriptionOptions() == null
+                || !(snapshot.getSubscriptionOptions().getBody() instanceof OptionGroups)) {
+            return;
         }
 
-        try {
-            // Extract metadata from reference artifact
-            String consumerId = extractConsumerIdFromArtifact(context);
-            String oldKeyAuthId = extractKeyAuthIdFromArtifact(context);
-            String serviceId = extractServiceIdFromArtifact(context);
-            String aclGroup = extractAclGroupFromArtifact(context);
-            String consumerGroupId = extractConsumerGroupIdFromArtifact(context);
-            String selectedOption = extractSelectedOptionFromArtifact(context);
-            KeyAuthPluginConfig pluginConfig = extractPluginConfigFromArtifact(context);
+        OptionGroups optionGroups = (OptionGroups) snapshot.getSubscriptionOptions().getBody();
+        List<OptionGroup> groups = optionGroups.getGroups();
+        if (groups == null || groups.isEmpty()) {
+            return;
+        }
 
-            // Delete old key-auth credential
+        JsonObject selections = null;
+        if (selectedOption != null && !selectedOption.trim().isEmpty()) {
             try {
-                apiGatewayClient.deleteKeyAuth(controlPlaneId, consumerId, oldKeyAuthId);
-                if (log.isDebugEnabled()) {
-                    log.debug("Deleted old key-auth credential: " + oldKeyAuthId);
+                selections = JsonParser.parseString(selectedOption).getAsJsonObject();
+            } catch (Exception e) {
+                throw new APIManagementException("Invalid selected subscription option payload", e);
+            }
+        }
+
+        for (OptionGroup group : groups) {
+            if (group == null || group.getGroupId() == null) {
+                continue;
+            }
+            List<OptionItem> enabledItems = group.getItems() == null ? new ArrayList<>()
+                    : group.getItems().stream().filter(OptionItem::isEnabled).collect(Collectors.toList());
+            if (enabledItems.isEmpty()) {
+                continue;
+            }
+
+            JsonObject selectedGroup = null;
+            if (selections != null && selections.has(group.getGroupId())
+                    && selections.get(group.getGroupId()).isJsonObject()) {
+                selectedGroup = selections.getAsJsonObject(group.getGroupId());
+            }
+
+            if (selectedGroup == null) {
+                if (group.isRequired() && enabledItems.size() > 1) {
+                    throw new APIManagementException(
+                            "Selection required for option group: " + group.getGroupId());
                 }
-            } catch (FeignException.NotFound e) {
-                log.warn("Old key-auth credential not found, continuing with regeneration");
+                continue;
             }
 
-            // Create new key-auth credential
-            KongKeyAuth keyAuthRequest = new KongKeyAuth();
-            KongKeyAuth keyAuth = apiGatewayClient.createKeyAuth(controlPlaneId, consumerId, keyAuthRequest);
-
-            if (keyAuth == null || keyAuth.getKey() == null) {
-                throw new APIManagementException("Failed to create new Kong key-auth credential");
+            if (!selectedGroup.has("id") || selectedGroup.get("id").isJsonNull()) {
+                throw new APIManagementException(
+                        "Selected option for group " + group.getGroupId() + " must include item id");
             }
-
-            // Build credential - use the first key name from stored plugin config
-            String headerName = pluginConfig.keyNames.get(0);
-            OpaqueApiKeyCredential credBody = new OpaqueApiKeyCredential(headerName, keyAuth.getKey());
-
-            FederatedCredential credential = new FederatedCredential();
-            credential.setBody(credBody);
-            credential.setExternalSubscriptionId(context.getExternalSubscriptionId());
-            credential.setValueRetrievable(true);
-            credential.setMasked(false);
-
-            // Build invocation instruction and reference artifact (preserving selectedOption and pluginConfig)
-            InvocationInstruction instruction = getInvocationInstruction(context, pluginConfig);
-            String referenceArtifact = buildReferenceArtifact(
-                    credential, instruction, consumerId, keyAuth.getId(), serviceId, aclGroup,
-                    consumerGroupId, selectedOption, pluginConfig);
-
-            if (log.isDebugEnabled()) {
-                log.debug("Credential regenerated successfully for: " + context.getExternalSubscriptionId());
+            String selectedId = selectedGroup.get("id").getAsString();
+            boolean exists = enabledItems.stream().anyMatch(item -> selectedId.equals(item.getId()));
+            if (!exists) {
+                throw new APIManagementException("Invalid or disabled selected option '" + selectedId
+                        + "' for group: " + group.getGroupId());
             }
-
-            return AgentOperationResult.builder()
-                    .credential(credential)
-                    .instruction(instruction)
-                    .referenceArtifact(referenceArtifact)
-                    .externalSubscriptionId(context.getExternalSubscriptionId())
-                    .build();
-
-        } catch (Exception e) {
-            log.error("Error regenerating credential for consumer: " + context.getExternalSubscriptionId(), e);
-            throw new APIManagementException("Failed to regenerate credential in Kong: " + e.getMessage(), e);
         }
     }
 
@@ -487,6 +481,26 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     @Override
     public String getGatewayType() {
         return GATEWAY_TYPE;
+    }
+
+    @Override
+    public boolean isSubscriptionSupport() {
+        try {
+            GatewayPortalConfiguration featureCatalog = new KongGatewayConfiguration().getGatewayFeatureCatalog();
+            Object supportedFeatures = featureCatalog.getSupportedFeatures();
+            if (supportedFeatures instanceof JsonObject) {
+                JsonObject featuresJson = (JsonObject) supportedFeatures;
+                if (featuresJson.has("federatedSubscription")
+                        && featuresJson.get("federatedSubscription").isJsonObject()) {
+                    JsonObject federatedSubscriptionConfig = featuresJson.getAsJsonObject("federatedSubscription");
+                    return federatedSubscriptionConfig.has("subcriptionSupport")
+                            && federatedSubscriptionConfig.get("subcriptionSupport").getAsBoolean();
+                }
+            }
+        } catch (APIManagementException e) {
+            log.warn("Error while resolving Kong subscription support from GatewayFeatureCatalog", e);
+        }
+        return false;
     }
 
     @Override
@@ -775,7 +789,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
                 artifact.addProperty("selectedOption", selectedOption);
             }
 
-            // Store plugin configuration for future retrieval/regeneration
+            // Store plugin configuration for future credential retrieval
             if (pluginConfig != null) {
                 JsonObject pluginConfigJson = new JsonObject();
                 JsonArray keyNamesArray = new JsonArray();
@@ -799,7 +813,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private FederatedCredential extractCredentialFromReferenceArtifact(FederatedSubscriptionContext context)
             throws APIManagementException {
         FederatedCredential credential = new FederatedCredential();
-        String subscriptionReferenceArtifact = context.getSubscriptionReferenceArtifact();
+        String subscriptionReferenceArtifact = context.getCredentialReferenceArtifact();
 
         if (subscriptionReferenceArtifact == null || subscriptionReferenceArtifact.isEmpty()) {
             if (log.isDebugEnabled()) {
@@ -878,25 +892,16 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractConsumerIdFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.get("consumerId").getAsString();
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract consumer ID from reference artifact", e);
         }
     }
 
-    private String extractKeyAuthIdFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
-        try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
-            return artifact.get("keyAuthId").getAsString();
-        } catch (Exception e) {
-            throw new APIManagementException("Failed to extract key-auth ID from reference artifact", e);
-        }
-    }
-
     private String extractServiceIdFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.get("serviceId").getAsString();
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract service ID from reference artifact", e);
@@ -905,30 +910,10 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
 
     private String extractAclGroupFromArtifact(FederatedSubscriptionContext context) throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             return artifact.has("aclGroup") ? artifact.get("aclGroup").getAsString() : null;
         } catch (Exception e) {
             throw new APIManagementException("Failed to extract ACL group from reference artifact", e);
-        }
-    }
-
-    private String extractConsumerGroupIdFromArtifact(FederatedSubscriptionContext context) {
-        try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
-            return artifact.has("consumerGroupId") ? artifact.get("consumerGroupId").getAsString() : null;
-        } catch (Exception e) {
-            log.warn("Failed to extract consumer group ID from reference artifact", e);
-            return null;
-        }
-    }
-
-    private String extractSelectedOptionFromArtifact(FederatedSubscriptionContext context) {
-        try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
-            return artifact.has("selectedOption") ? artifact.get("selectedOption").getAsString() : null;
-        } catch (Exception e) {
-            log.warn("Failed to extract selectedOption from reference artifact", e);
-            return null;
         }
     }
 
@@ -1004,7 +989,7 @@ public class KongFederatedSubscriptionAgent implements FederatedSubscriptionAgen
     private KeyAuthPluginConfig extractPluginConfigFromArtifact(FederatedSubscriptionContext context)
             throws APIManagementException {
         try {
-            JsonObject artifact = JsonParser.parseString(context.getSubscriptionReferenceArtifact()).getAsJsonObject();
+            JsonObject artifact = JsonParser.parseString(context.getCredentialReferenceArtifact()).getAsJsonObject();
             
             if (!artifact.has("pluginConfig")) {
                 // Fallback for old artifacts without stored config - use defaults

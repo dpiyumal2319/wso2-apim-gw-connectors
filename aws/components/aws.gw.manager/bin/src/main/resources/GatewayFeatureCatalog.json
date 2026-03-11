@@ -22,7 +22,13 @@
         "typePRODUCTION"
       ],
       "endpointSecurity": [],
-      "tryout": []
+      "tryout": [],
+      "federatedSubscription": {
+        "subcriptionSupport": false,
+        "credentialSchema": "opaque-api-key",
+        "invocationSchema": "api-key-invocation",
+        "subcriptionOptionsSchema": "subscription-plans"
+      }
     }
   }
 }
