@@ -16,7 +16,10 @@
         "policies"
       ],
       "monetization": [],
-      "subscriptions": [],
+      "subscriptions": {
+        "supported": true,
+        "subscriptionless": false
+      },
       "endpoints": [
         "http",
         "typePRODUCTION"
