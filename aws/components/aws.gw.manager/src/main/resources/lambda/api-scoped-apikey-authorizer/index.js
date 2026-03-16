@@ -1,8 +1,13 @@
 'use strict';
 
-const AWS = require('aws-sdk');
+const {
+    APIGatewayClient,
+    GetApiKeysCommand,
+    GetTagsCommand,
+} = require('@aws-sdk/client-api-gateway');
 
 const TAG_API_ID = 'wso2:api-id';
+const API_KEY_HEADER = 'x-api-key';
 
 const DEFAULT_CACHE_TTL_SECONDS = parsePositiveInt(process.env.CACHE_TTL_SECONDS, 60);
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
@@ -67,25 +72,16 @@ function extractApiKeyValue(event) {
 
     const headers = event.headers || {};
     for (const [name, value] of Object.entries(headers)) {
-        if (name && name.toLowerCase() === 'apikey') {
+        if (name && name.toLowerCase() === API_KEY_HEADER) {
             return sanitizeHeaderValue(value);
         }
     }
 
     const multiValueHeaders = event.multiValueHeaders || {};
     for (const [name, values] of Object.entries(multiValueHeaders)) {
-        if (name && name.toLowerCase() === 'apikey' && Array.isArray(values) && values.length > 0) {
+        if (name && name.toLowerCase() === API_KEY_HEADER && Array.isArray(values) && values.length > 0) {
             return sanitizeHeaderValue(values[0]);
         }
-    }
-
-    // TOKEN authorizer compatibility: identity source value appears here.
-    if (typeof event.authorizationToken === 'string') {
-        const token = event.authorizationToken.trim();
-        if (token.toLowerCase().startsWith('apikey ')) {
-            return sanitizeHeaderValue(token.substring(7));
-        }
-        return sanitizeHeaderValue(token);
     }
 
     return null;
@@ -131,11 +127,11 @@ async function findApiKeyByValue(apiKeyValue, region) {
     let position;
 
     do {
-        const response = await client.getApiKeys({
+        const response = await client.send(new GetApiKeysCommand({
             limit: 500,
             position,
             includeValues: true,
-        }).promise();
+        }));
 
         const items = response && response.items ? response.items : [];
         for (const item of items) {
@@ -170,11 +166,11 @@ async function getApiKeyTags(apiKeyId, region) {
     const mergedTags = {};
 
     do {
-        const response = await client.getTags({
+        const response = await client.send(new GetTagsCommand({
             resourceArn,
             position,
             limit: 500,
-        }).promise();
+        }));
 
         Object.assign(mergedTags, (response && response.tags) || {});
         position = response && response.position ? response.position : null;
@@ -204,7 +200,7 @@ function getApiGatewayClient(region) {
     if (clientByRegion.has(region)) {
         return clientByRegion.get(region);
     }
-    const client = new AWS.APIGateway({ region });
+    const client = new APIGatewayClient({ region });
     clientByRegion.set(region, client);
     return client;
 }

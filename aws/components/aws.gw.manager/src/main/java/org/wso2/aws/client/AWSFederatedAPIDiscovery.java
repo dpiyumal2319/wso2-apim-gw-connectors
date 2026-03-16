@@ -44,6 +44,7 @@ import java.util.Objects;
 import static org.wso2.carbon.apimgt.impl.importexport.ImportExportConstants.DEPLOYMENT_NAME;
 import static org.wso2.carbon.apimgt.impl.importexport.ImportExportConstants.DEPLOYMENT_VHOST;
 import static org.wso2.carbon.apimgt.impl.importexport.ImportExportConstants.DISPLAY_ON_DEVPORTAL_OPTION;
+import static org.wso2.carbon.apimgt.impl.APIConstants.API_SECURITY_API_KEY;
 
 /**
  * Represents the federated API discovery implementation for AWS API Gateway.
@@ -59,6 +60,7 @@ import static org.wso2.carbon.apimgt.impl.importexport.ImportExportConstants.DIS
 public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     private static final Log log = LogFactory.getLog(AWSFederatedAPIDiscovery.class);
+    private static final String AWS_API_KEY_HEADER = "x-api-key";
 
     private Environment environment;
     private ApiGatewayClient apiGatewayClient;
@@ -114,6 +116,8 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
             }
             String apiDefinition = AWSAPIUtil.getRestApiDefinition(apiGatewayClient, restApi.id(), stage);
             API api = AWSAPIUtil.restAPItoAPI(restApi, apiDefinition, organization, environment);
+            api.setApiSecurity(API_SECURITY_API_KEY);
+            api.setApiKeyHeader(AWS_API_KEY_HEADER);
             AWSAPIUtil.setEndpointConfig(api, restApi, apiGatewayClient);
             DiscoveredAPI discoveredAPI = new DiscoveredAPI(api,
                     AWSAPIUtil.createReferenceArtifact(restApi,apiDefinition));
