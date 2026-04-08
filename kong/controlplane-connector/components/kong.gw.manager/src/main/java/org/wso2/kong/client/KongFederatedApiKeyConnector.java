@@ -140,7 +140,6 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             
             return FederatedApiKeyCreationResult.builder()
                     .remoteCredentialId(consumerId)
-                    .credentialType("KONG_CONSUMER")
                     .build();
         } catch (KongGatewayException e) {
             if (e.getStatusCode() == HTTP_CONFLICT) {
