@@ -25,7 +25,7 @@ import org.apache.commons.logging.LogFactory;
 import org.wso2.aws.client.util.GatewayUtil;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
-import org.wso2.carbon.apimgt.api.model.CredentialCreationResult;
+import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
@@ -129,7 +129,6 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             
             return FederatedApiKeyCreationResult.builder()
                     .remoteCredentialId(response.id())
-                    .credentialType("AWS_API_KEY")
                     .build();
         } catch (Exception e) {
             throw new APIManagementException("Error creating API key in AWS", e);

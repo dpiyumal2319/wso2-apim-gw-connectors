@@ -130,7 +130,6 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
             
             return FederatedApiKeyCreationResult.builder()
                     .remoteCredentialId(subscription.name())
-                    .credentialType("AZURE_SUBSCRIPTION")
                     .metadata(metadata)
                     .build();
         } catch (Exception e) {
