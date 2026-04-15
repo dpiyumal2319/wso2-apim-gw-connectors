@@ -1,34 +1,27 @@
 {
   "Azure": {
-    "apiTypes": ["rest"],
+    "apiTypes": [
+      "rest"
+    ],
     "gatewayFeatures": {
       "basic": [],
-      "runtime": ["cors", "transportsHTTP", "transportsHTTPS"],
+      "runtime": [
+        "cors",
+        "transportsHTTP",
+        "transportsHTTPS",
+        "apikey"
+      ],
       "resources": [],
       "localScopes": [],
-      "policies": ["policies"],
+      "policies": [
+        "policies"
+      ],
       "monetization": [],
-      "subscriptions": {
-        "supported": false,
-        "subscriptionless": true
-      },
-      "apiKeys": {
-        "supported": true,
-        "federated": true,
-        "operations": [
-          "issue",
-          "regenerate",
-          "revoke"
-        ],
-        "associationRequiredForInvocation": false,
-        "headerName": "Ocp-Apim-Subscription-Key",
-        "optionSupport": {
-          "expiry": "metadata",
-          "permittedIP": "metadata",
-          "permittedReferer": "metadata"
-        }
-      },
-      "endpoints": ["http", "typePRODUCTION"],
+      "subscriptions": [],
+      "endpoints": [
+        "http",
+        "typePRODUCTION"
+      ],
       "endpointSecurity": [],
       "tryout": []
     }

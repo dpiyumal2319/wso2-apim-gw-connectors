@@ -18,7 +18,6 @@
 
 package org.wso2.kong.client;
 
-import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import feign.Feign;
 import feign.RequestInterceptor;
@@ -36,7 +35,6 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.ExternalSubscriptionPolicy;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
-import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 import org.wso2.carbon.apimgt.impl.kmclient.ApacheFeignHttpClient;
 import org.wso2.kong.client.model.KongAcl;
 import org.wso2.kong.client.model.KongConsumer;
@@ -281,20 +279,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
 
     @Override
     public boolean isApiKeySupport() {
-        try {
-            GatewayPortalConfiguration featureCatalog = new KongGatewayConfiguration().getGatewayFeatureCatalog();
-            Object supportedFeatures = featureCatalog.getSupportedFeatures();
-            if (supportedFeatures instanceof JsonObject) {
-                JsonObject featuresJson = (JsonObject) supportedFeatures;
-                if (featuresJson.has("apiKeys") && featuresJson.get("apiKeys").isJsonObject()) {
-                    JsonObject apiKeys = featuresJson.getAsJsonObject("apiKeys");
-                    return apiKeys.has("supported") && apiKeys.get("supported").getAsBoolean();
-                }
-            }
-        } catch (APIManagementException e) {
-            log.warn("Error while resolving Kong API key support from GatewayFeatureCatalog", e);
-        }
-        return false;
+        return true;
     }
 
     private String resolveRemoteApiId(String apiReferenceArtifact) throws APIManagementException {

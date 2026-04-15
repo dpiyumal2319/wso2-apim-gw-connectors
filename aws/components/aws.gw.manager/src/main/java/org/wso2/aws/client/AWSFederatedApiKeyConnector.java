@@ -18,7 +18,6 @@
 
 package org.wso2.aws.client;
 
-import com.google.gson.JsonObject;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -28,7 +27,6 @@ import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
-import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 import org.wso2.carbon.apimgt.api.model.ExternalSubscriptionPolicy;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
@@ -76,20 +74,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
 
     @Override
     public boolean isApiKeySupport() {
-        try {
-            GatewayPortalConfiguration featureCatalog = new AWSGatewayConfiguration().getGatewayFeatureCatalog();
-            Object supportedFeatures = featureCatalog.getSupportedFeatures();
-            if (supportedFeatures instanceof JsonObject) {
-                JsonObject featuresJson = (JsonObject) supportedFeatures;
-                if (featuresJson.has("apiKeys") && featuresJson.get("apiKeys").isJsonObject()) {
-                    JsonObject apiKeys = featuresJson.getAsJsonObject("apiKeys");
-                    return apiKeys.has("supported") && apiKeys.get("supported").getAsBoolean();
-                }
-            }
-        } catch (APIManagementException e) {
-            log.warn("Error while resolving AWS API key support from GatewayFeatureCatalog", e);
-        }
-        return false;
+        return true;
     }
 
     @Override

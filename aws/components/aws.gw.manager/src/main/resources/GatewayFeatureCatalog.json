@@ -8,7 +8,8 @@
       "runtime": [
         "transportsHTTP",
         "transportsHTTPS",
-        "oauth2"
+        "oauth2",
+        "apikey"
       ],
       "resources": [],
       "localScopes": [],
@@ -16,28 +17,9 @@
         "policies"
       ],
       "monetization": [],
-      "subscriptions": {
-        "supported": true,
-        "subscriptionless": false
-      },
-      "apiKeys": {
-        "supported": true,
-        "federated": true,
-        "operations": [
-          "issue",
-          "regenerate",
-          "revoke",
-          "associate",
-          "dissociate"
-        ],
-        "associationRequiredForInvocation": true,
-        "headerName": "ApiKey",
-        "optionSupport": {
-          "expiry": "tag",
-          "permittedIP": "tag",
-          "permittedReferer": "tag"
-        }
-      },
+      "subscriptions": [
+        "subscriptions"
+      ],
       "endpoints": [
         "http",
         "typePRODUCTION"

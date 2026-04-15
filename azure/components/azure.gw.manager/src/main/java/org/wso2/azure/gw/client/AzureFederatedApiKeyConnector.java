@@ -28,7 +28,6 @@ import com.azure.resourcemanager.apimanagement.ApiManagementManager;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionContract;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionCreateParameters;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionState;
-import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
@@ -39,7 +38,6 @@ import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.ExternalSubscriptionPolicy;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
-import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -172,20 +170,7 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
 
     @Override
     public boolean isApiKeySupport() {
-        try {
-            GatewayPortalConfiguration featureCatalog = new AzureGatewayConfiguration().getGatewayFeatureCatalog();
-            Object supportedFeatures = featureCatalog.getSupportedFeatures();
-            if (supportedFeatures instanceof JsonObject) {
-                JsonObject featuresJson = (JsonObject) supportedFeatures;
-                if (featuresJson.has("apiKeys") && featuresJson.get("apiKeys").isJsonObject()) {
-                    JsonObject apiKeys = featuresJson.getAsJsonObject("apiKeys");
-                    return apiKeys.has("supported") && apiKeys.get("supported").getAsBoolean();
-                }
-            }
-        } catch (APIManagementException e) {
-            log.warn("Error while resolving Azure API key support from GatewayFeatureCatalog", e);
-        }
-        return false;
+        return true;
     }
 
     @Override

@@ -22,18 +22,7 @@
       "localScopes": [],
       "policies": [],
       "monetization": [],
-      "subscriptions": {
-        "supported": false,
-        "subscriptionless": true
-      },
-      "apiKeys": {
-        "supported": false,
-        "optionSupport": {
-          "expiry": "unsupported",
-          "permittedIP": "unsupported",
-          "permittedReferer": "unsupported"
-        }
-      },
+      "subscriptions": [],
       "endpoints": [
         "typePRODUCTION",
         "typeSANDBOX"
