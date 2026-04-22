@@ -85,12 +85,6 @@ public interface KongKonnectApi {
                                                      @Param("serviceId") String serviceId, @Param("size") int size)
             throws KongGatewayException;
 
-    @RequestLine("GET /v2/control-planes/{cpId}/core-entities/routes/{routeId}/plugins?size={size}")
-    @Headers({"Accept: application/json", "Content-Type: application/json"})
-    PagedResponse<KongPlugin> listPluginsByRouteId(@Param("cpId") String controlPlaneId,
-                                                   @Param("routeId") String routeId, @Param("size") int size)
-            throws KongGatewayException;
-
     // Consumer management
 
     @RequestLine("POST /v2/control-planes/{cpId}/core-entities/consumers")

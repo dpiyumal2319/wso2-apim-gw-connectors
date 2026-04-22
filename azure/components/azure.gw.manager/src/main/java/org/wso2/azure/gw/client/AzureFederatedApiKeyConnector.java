@@ -28,6 +28,7 @@ import com.azure.resourcemanager.apimanagement.ApiManagementManager;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionContract;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionCreateParameters;
 import com.azure.resourcemanager.apimanagement.models.SubscriptionState;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
@@ -40,9 +41,7 @@ import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Azure implementation of federated API key management.
@@ -56,6 +55,9 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private String serviceName;
     private ApiManagementManager manager;
 
+    /**
+     * Initializes the Azure API Management client from the environment service-principal configuration.
+     */
     @Override
     public void init(Environment environment, String organization) throws APIManagementException {
         try {
@@ -89,6 +91,9 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
     }
 
+    /**
+     * Creates an Azure APIM subscription scoped to the referenced API and returns the subscription name.
+     */
     @Override
     public FederatedApiKeyCreationResult createApiKey(FederatedApiKeyContext context) throws APIManagementException {
         if (context == null || StringUtils.isBlank(context.getApiReferenceArtifact())
@@ -110,31 +115,18 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
 
             SubscriptionContract subscription = manager.subscriptions()
                     .createOrUpdate(resourceGroup, serviceName, subscriptionName, parameters);
-            
-            Map<String, Object> metadata = new HashMap<>();
-            metadata.put("subscriptionName", subscription.name());
-            metadata.put("primaryKey", subscription.primaryKey());
-            metadata.put("secondaryKey", subscription.secondaryKey());
-            metadata.put("scope", subscription.scope());
-            if (context.getValidityPeriod() != null) {
-                metadata.put("requestedValidityPeriod", context.getValidityPeriod());
-            }
-            if (StringUtils.isNotBlank(context.getPermittedIP())) {
-                metadata.put("requestedPermittedIP", context.getPermittedIP());
-            }
-            if (StringUtils.isNotBlank(context.getPermittedReferer())) {
-                metadata.put("requestedPermittedReferer", context.getPermittedReferer());
-            }
-            
+
             return FederatedApiKeyCreationResult.builder()
                     .remoteCredentialId(subscription.name())
-                    .metadata(metadata)
                     .build();
         } catch (Exception e) {
             throw new APIManagementException("Error creating API key in Azure", e);
         }
     }
 
+    /**
+     * Deletes the Azure APIM subscription identified by the stored remote credential ID.
+     */
     @Override
     public void revokeApiKey(FederatedApiKeyContext context) throws APIManagementException {
         if (context == null || StringUtils.isBlank(context.getRemoteApiKeyId())) {
@@ -147,59 +139,55 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
     }
 
+    /**
+     * No-op because Azure models the API-key scope on the subscription itself, not as a separate plan association.
+     */
     @Override
-    public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyId) {
+    public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference) {
         if (log.isDebugEnabled()) {
             log.debug("Skipping rate-limit policy association for Azure API-bound key. keyUuid="
                     + (context != null ? context.getApiKeyUuid() : null));
         }
     }
 
+    /**
+     * No-op because Azure has no separate remote plan association to remove for API-bound subscriptions.
+     */
     @Override
-    public void removeRateLimitPolicy(FederatedApiKeyContext context) {
+    public void removeRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference) {
         if (log.isDebugEnabled()) {
             log.debug("Skipping rate-limit policy dissociation for Azure API-bound key. keyUuid="
                     + (context != null ? context.getApiKeyUuid() : null));
         }
     }
 
+    /**
+     * Returns the gateway type handled by this connector.
+     */
     @Override
     public String getGatewayType() {
         return AzureConstants.AZURE_TYPE;
     }
 
+    /**
+     * Indicates that Azure federated API-key provisioning is supported.
+     */
     @Override
     public boolean isApiKeySupport() {
         return true;
     }
 
+    /**
+     * Azure does not list separate remote plans for Admin plan mapping.
+     */
     @Override
     public boolean supportsRemotePlanListing() {
         return false;
     }
 
-    @Override
-    public String resolveRemotePolicyId(String remotePolicyReference) throws APIManagementException {
-        if (StringUtils.isBlank(remotePolicyReference)) {
-            throw new APIManagementException("Remote policy reference cannot be null or empty");
-        }
-        try {
-            JsonObject refJson = JsonParser.parseString(remotePolicyReference).getAsJsonObject();
-            if (refJson.has("id") && !refJson.get("id").isJsonNull()) {
-                return refJson.get("id").getAsString();
-            }
-            if (refJson.has("planId") && !refJson.get("planId").isJsonNull()) {
-                return refJson.get("planId").getAsString();
-            }
-            if (refJson.has("raw") && !refJson.get("raw").isJsonNull()) {
-                return refJson.get("raw").getAsString();
-            }
-        } catch (Exception e) {
-            log.debug("Failed to parse remote policy reference as JSON, treating as raw value", e);
-        }
-        return remotePolicyReference;
-    }
-
+    /**
+     * Returns an empty remote-plan list because Azure API-bound keys do not require separate plan mappings.
+     */
     @Override
     public List<ExternalSubscriptionPolicy> listRateLimitPolicies(Environment environment)
             throws APIManagementException {
@@ -208,6 +196,9 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
         return new ArrayList<>();
     }
 
+    /**
+     * Extracts the full Azure ARM API resource ID from the connector-owned API reference artifact.
+     */
     private String extractAzureApiIdFromReferenceArtifact(String referenceArtifact) throws APIManagementException {
         try {
             JsonObject refJson = JsonParser.parseString(referenceArtifact).getAsJsonObject();
@@ -218,28 +209,28 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
                     return azureId;
                 }
             }
-            if (refJson.has("name") && !refJson.get("name").isJsonNull()) {
-                String name = refJson.get("name").getAsString();
-                if (StringUtils.isNotBlank(name)) {
-                    return name;
-                }
-            }
             throw new APIManagementException("Azure API ID not found in reference artifact");
         } catch (Exception e) {
             throw new APIManagementException("Failed to parse Azure reference artifact", e);
         }
     }
 
+    /**
+     * Builds the Azure subscription scope from the full ARM API resource ID persisted in the reference artifact.
+     */
     private String buildApiScope(String externalApiId) throws APIManagementException {
         if (StringUtils.isBlank(externalApiId)) {
             throw new APIManagementException("External API ID cannot be null or empty");
         }
-        if (externalApiId.startsWith("/subscriptions/") || externalApiId.startsWith("/apis/")) {
-            return externalApiId;
+        if (!externalApiId.startsWith("/subscriptions/")) {
+            throw new APIManagementException("Azure API reference artifact must contain a full ARM resource ID");
         }
-        return "/apis/" + externalApiId;
+        return externalApiId;
     }
 
+    /**
+     * Builds a stable Azure subscription name from the local API-key UUID.
+     */
     private String generateSubscriptionName(FederatedApiKeyContext context) {
         String keyUuid = context != null ? context.getApiKeyUuid() : null;
         if (StringUtils.isBlank(keyUuid)) {
@@ -250,6 +241,9 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
         return base.length() > 80 ? base.substring(0, 80) : base;
     }
 
+    /**
+     * Builds a human-readable Azure subscription display name from available local API-key context.
+     */
     private String generateDisplayName(FederatedApiKeyContext context) {
         if (context == null) {
             return "WSO2 API key";

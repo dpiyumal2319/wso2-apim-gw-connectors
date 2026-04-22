@@ -1,27 +1,15 @@
 {
   "Azure": {
-    "apiTypes": [
-      "rest"
-    ],
+    "apiTypes": ["rest"],
     "gatewayFeatures": {
       "basic": [],
-      "runtime": [
-        "cors",
-        "transportsHTTP",
-        "transportsHTTPS",
-        "apikey"
-      ],
+      "runtime": ["cors", "transportsHTTP", "transportsHTTPS", "apikey"],
       "resources": [],
       "localScopes": [],
-      "policies": [
-        "policies"
-      ],
+      "policies": ["policies"],
       "monetization": [],
       "subscriptions": [],
-      "endpoints": [
-        "http",
-        "typePRODUCTION"
-      ],
+      "endpoints": ["http", "typePRODUCTION"],
       "endpointSecurity": [],
       "tryout": []
     }

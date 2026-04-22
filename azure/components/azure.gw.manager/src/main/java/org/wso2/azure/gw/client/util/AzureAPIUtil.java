@@ -77,7 +77,6 @@ import java.util.UUID;
  */
 public class AzureAPIUtil {
     private static final Log log = LogFactory.getLog(AzureAPIUtil.class);
-    private static final String DEFAULT_AZURE_SUBSCRIPTION_KEY_QUERY_PARAM = "subscription-key";
 
     /**
      * Deploys an API to the Azure API Management Gateway.
@@ -276,8 +275,7 @@ public class AzureAPIUtil {
 
     private static SubscriptionKeyParameterNamesContract buildSubscriptionKeyParameterNames(String apiKeyHeader) {
         return new SubscriptionKeyParameterNamesContract()
-                .withHeaderProperty(apiKeyHeader)
-                .withQuery(DEFAULT_AZURE_SUBSCRIPTION_KEY_QUERY_PARAM);
+                .withHeaderProperty(apiKeyHeader);
     }
 
     private static String resolveEffectiveApiKeyHeader(String apiKeyHeader) {
