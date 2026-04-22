@@ -49,8 +49,6 @@ import java.util.stream.Collectors;
  */
 public class AWSGatewayDeployer implements GatewayDeployer {
     private static final Log log = LogFactory.getLog(AWSGatewayDeployer.class);
-    private static final String API_KEY_SECURITY = "api_key";
-    private static final String AWS_NATIVE_API_KEY_HEADER = "x-api-key";
     private ApiGatewayClient apiGatewayClient;
     private String region;
     private String stage;
@@ -161,8 +159,8 @@ public class AWSGatewayDeployer implements GatewayDeployer {
         }
         String configuredApiKeyHeader = api.getApiKeyHeader();
         if (StringUtils.isNotBlank(configuredApiKeyHeader)
-                && !AWS_NATIVE_API_KEY_HEADER.equalsIgnoreCase(configuredApiKeyHeader)) {
-            log.warn("AWS API Gateway uses native API key header '" + AWS_NATIVE_API_KEY_HEADER + "'. Configured "
+                && !AWSConstants.AWS_API_KEY_HEADER.equalsIgnoreCase(configuredApiKeyHeader)) {
+            log.warn("AWS API Gateway uses native API key header '" + AWSConstants.AWS_API_KEY_HEADER + "'. Configured "
                     + "header '" + configuredApiKeyHeader + "' is preserved in API metadata, but remote invocation "
                     + "may fail unless custom validation is configured in AWS.");
         }
@@ -173,7 +171,7 @@ public class AWSGatewayDeployer implements GatewayDeployer {
             return false;
         }
         for (String token : apiSecurity.split(",")) {
-            if (API_KEY_SECURITY.equalsIgnoreCase(token.trim())) {
+            if (AWSConstants.API_KEY_SECURITY.equalsIgnoreCase(token.trim())) {
                 return true;
             }
         }

@@ -118,7 +118,7 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
             AWSAPIUtil.ApiKeySecurityContext apiKeySecurityContext =
                     AWSAPIUtil.resolveApiKeySecurityContext(restApi.id(), apiGatewayClient);
             if (apiKeySecurityContext.isEnabled()) {
-                api.setApiSecurity("api_key");
+                api.setApiSecurity(AWSConstants.API_KEY_SECURITY);
                 api.setApiKeyHeader(apiKeySecurityContext.getHeaderName());
             }
             DiscoveredAPI discoveredAPI = new DiscoveredAPI(api,

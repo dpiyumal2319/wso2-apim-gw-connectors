@@ -67,6 +67,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final String TAG_VALIDITY_PERIOD = "wso2:key-validity-period";
     private static final String TAG_PERMITTED_IP = "wso2:key-permitted-ip";
     private static final String TAG_PERMITTED_REFERER = "wso2:key-permitted-referer";
+    private static final String USAGE_PLAN_KEY_TYPE_API_KEY = "API_KEY";
 
     private ApiGatewayClient apiGatewayClient;
 
@@ -170,7 +171,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             CreateUsagePlanKeyRequest request = CreateUsagePlanKeyRequest.builder()
                     .usagePlanId(policyId)
                     .keyId(context.getRemoteApiKeyId())
-                    .keyType("API_KEY")
+                    .keyType(USAGE_PLAN_KEY_TYPE_API_KEY)
                     .build();
             apiGatewayClient.createUsagePlanKey(request);
         } catch (ConflictException e) {

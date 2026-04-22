@@ -100,9 +100,7 @@ import static org.wso2.aws.client.AWSConstants.URL_PROP;
  */
 public class AWSAPIUtil {
     private static final Log log = LogFactory.getLog(AWSAPIUtil.class);
-    private static final String API_KEY_SECURITY = "api_key";
     private static final String API_KEY_SOURCE_HEADER = "HEADER";
-    private static final String AWS_API_KEY_HEADER = "x-api-key";
     private static final String AWS_REFERENCE_API_KEY_ENABLED = "apiKeySecurityEnabled";
     private static final String AWS_REFERENCE_API_KEY_HEADER = "apiKeyHeader";
 
@@ -764,7 +762,7 @@ public class AWSAPIUtil {
                         .httpMethod(method)
                         .build());
                 if (Boolean.TRUE.equals(getMethodResponse.apiKeyRequired())) {
-                    return new ApiKeySecurityContext(true, AWS_API_KEY_HEADER);
+                    return new ApiKeySecurityContext(true, AWSConstants.AWS_API_KEY_HEADER);
                 }
             }
         }
@@ -811,7 +809,7 @@ public class AWSAPIUtil {
     }
 
     private static boolean requiresNativeApiKey(API api) {
-        return api != null && hasSecurityToken(api.getApiSecurity(), API_KEY_SECURITY);
+        return api != null && hasSecurityToken(api.getApiSecurity(), AWSConstants.API_KEY_SECURITY);
     }
 
     private static PatchOperation getApiKeyRequirementPatchOperation(boolean apiKeyEnabled) {

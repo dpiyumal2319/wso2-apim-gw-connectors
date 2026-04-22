@@ -60,6 +60,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final int HTTP_CONFLICT = 409;
     private static final int MAX_TAG_LENGTH = 256;
     private static final String CONSUMER_GROUP_ID = "consumerGroupId";
+    private static final String KONG_REFERENCE_UUID = "uuid";
     private static final String TAG_API_ID = "wso2:api-id";
     private static final String TAG_API_UUID = "wso2:api-uuid";
     private static final String TAG_KEY_UUID = "wso2:key-uuid";
@@ -327,13 +328,13 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
         try {
             JsonObject refArtifact = JsonParser.parseString(apiReferenceArtifact).getAsJsonObject();
-            if (refArtifact.has("uuid") && !refArtifact.get("uuid").isJsonNull()) {
-                String value = refArtifact.get("uuid").getAsString();
+            if (refArtifact.has(KONG_REFERENCE_UUID) && !refArtifact.get(KONG_REFERENCE_UUID).isJsonNull()) {
+                String value = refArtifact.get(KONG_REFERENCE_UUID).getAsString();
                 if (StringUtils.isNotBlank(value)) {
                     return value;
                 }
             }
-            throw new APIManagementException("Kong API reference artifact must contain uuid");
+            throw new APIManagementException("Kong API reference artifact must contain " + KONG_REFERENCE_UUID);
         } catch (APIManagementException e) {
             throw e;
         } catch (Exception e) {
