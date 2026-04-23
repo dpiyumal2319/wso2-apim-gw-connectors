@@ -27,7 +27,7 @@ import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
-import org.wso2.carbon.apimgt.api.model.ExternalSubscriptionPolicy;
+import org.wso2.carbon.apimgt.api.model.GatewayTierMapping;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.http.SdkHttpClient;
@@ -40,10 +40,7 @@ import software.amazon.awssdk.services.apigateway.model.CreateUsagePlanKeyReques
 import software.amazon.awssdk.services.apigateway.model.DeleteApiKeyRequest;
 import software.amazon.awssdk.services.apigateway.model.DeleteUsagePlanKeyRequest;
 import software.amazon.awssdk.services.apigateway.model.ConflictException;
-import software.amazon.awssdk.services.apigateway.model.GetUsagePlansRequest;
-import software.amazon.awssdk.services.apigateway.model.GetUsagePlansResponse;
 import software.amazon.awssdk.services.apigateway.model.NotFoundException;
-import software.amazon.awssdk.services.apigateway.model.UsagePlan;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -71,6 +68,8 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final String USAGE_PLAN_KEY_TYPE_API_KEY = "API_KEY";
 
     private ApiGatewayClient apiGatewayClient;
+    private String environmentId;
+    private List<GatewayTierMapping> tierMappings = new ArrayList<>();
 
     /**
      * Returns the gateway type handled by this connector.
@@ -97,6 +96,9 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             String region = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_REGION);
             String accessKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_ACCESS_KEY);
             String secretKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_SECRET_KEY);
+            this.environmentId = environment.getUuid();
+            this.tierMappings = environment.getTierMappings() != null
+                    ? new ArrayList<>(environment.getTierMappings()) : new ArrayList<>();
 
             SdkHttpClient httpClient = ApacheHttpClient.builder().build();
             this.apiGatewayClient = ApiGatewayClient.builder()
@@ -152,8 +154,9 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         FederatedApiKeyContext newKeyContext = copyContextWithApiKeyReferenceArtifact(context,
                 result.getReferenceArtifact());
         try {
-            if (StringUtils.isNotBlank(context.getRemotePolicyReference())) {
-                applyRateLimitPolicy(newKeyContext, context.getRemotePolicyReference());
+            String remotePolicyReference = resolveRemotePolicyReference(context, false);
+            if (StringUtils.isNotBlank(remotePolicyReference)) {
+                applyResolvedRateLimitPolicy(newKeyContext, remotePolicyReference);
             }
         } catch (APIManagementException e) {
             revokeApiKey(newKeyContext);
@@ -186,7 +189,15 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Associates the AWS API key with the usage plan encoded in the connector-owned remote plan reference.
      */
     @Override
-    public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
+    public void applyRateLimitPolicy(FederatedApiKeyContext context) throws APIManagementException {
+        String remotePolicyReference = resolveRemotePolicyReference(context, true);
+        if (StringUtils.isBlank(remotePolicyReference)) {
+            return;
+        }
+        applyResolvedRateLimitPolicy(context, remotePolicyReference);
+    }
+
+    private void applyResolvedRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
             throws APIManagementException {
         String apiKeyId = resolveApiKeyId(context);
         if (StringUtils.isBlank(apiKeyId)) {
@@ -216,8 +227,11 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Removes the AWS API key from the usage plan encoded in the connector-owned remote plan reference.
      */
     @Override
-    public void removeRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
-            throws APIManagementException {
+    public void removeRateLimitPolicy(FederatedApiKeyContext context) throws APIManagementException {
+        String remotePolicyReference = resolveRemotePolicyReference(context, true);
+        if (StringUtils.isBlank(remotePolicyReference)) {
+            return;
+        }
         String apiKeyId = resolveApiKeyId(context);
         if (StringUtils.isBlank(apiKeyId)) {
             return;
@@ -251,7 +265,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
                 .apiKeyName(context.getApiKeyName())
                 .apiKeyValue(context.getApiKeyValue())
                 .apiKeyReferenceArtifact(apiKeyReferenceArtifact)
-                .remotePolicyReference(context.getRemotePolicyReference())
+                .localTierName(context.getLocalTierName())
                 .authzUser(context.getAuthzUser())
                 .applicationUuid(context.getApplicationUuid())
                 .organizationId(context.getOrganizationId())
@@ -309,49 +323,29 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
     }
 
-    /**
-     * Lists AWS usage plans as remote subscription policies for Admin plan mapping.
-     */
-    @Override
-    public List<ExternalSubscriptionPolicy> listRateLimitPolicies(Environment environment) throws APIManagementException {
-        List<ExternalSubscriptionPolicy> rateLimitPolicies = new ArrayList<>();
-        try {
-            String position = null;
-            do {
-                GetUsagePlansRequest request = GetUsagePlansRequest.builder()
-                        .limit(500)
-                        .position(position)
-                        .build();
-                GetUsagePlansResponse response = apiGatewayClient.getUsagePlans(request);
-                for (UsagePlan plan : response.items()) {
-                    Map<String, String> limits = new HashMap<>();
-                    if (plan.throttle() != null) {
-                        if (plan.throttle().rateLimit() != null) {
-                            limits.put("rateLimit", String.valueOf(plan.throttle().rateLimit()));
-                        }
-                        if (plan.throttle().burstLimit() != null) {
-                            limits.put("burstLimit", String.valueOf(plan.throttle().burstLimit()));
-                        }
-                    }
-                    if (plan.quota() != null) {
-                        if (plan.quota().limit() != null) {
-                            limits.put("quotaLimit", String.valueOf(plan.quota().limit()));
-                        }
-                        if (plan.quota().period() != null) {
-                            limits.put("quotaPeriod", plan.quota().period().toString());
-                        }
-                    }
-                    ExternalSubscriptionPolicy policy = new ExternalSubscriptionPolicy(plan.id(), plan.name(),
-                            plan.description() != null ? plan.description() : "", limits);
-                    policy.setReference(buildRemotePolicyReference(plan.id()));
-                    rateLimitPolicies.add(policy);
-                }
-                position = response.position();
-            } while (position != null);
-        } catch (Exception e) {
-            throw new APIManagementException("Failed to list AWS Usage Plans: " + e.getMessage(), e);
+    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalTier)
+            throws APIManagementException {
+        if (tierMappings == null || tierMappings.isEmpty()) {
+            return null;
         }
-        return rateLimitPolicies;
+        String localTierName = context != null ? context.getLocalTierName() : null;
+        if (StringUtils.isBlank(localTierName)) {
+            if (requireLocalTier) {
+                throw new APIManagementException("Local application tier is required for external tier mapping");
+            }
+            return null;
+        }
+        for (GatewayTierMapping tierMapping : tierMappings) {
+            if (tierMapping != null && StringUtils.equalsIgnoreCase(localTierName, tierMapping.getLocalTierName())) {
+                if (StringUtils.isBlank(tierMapping.getRemotePlanReference())) {
+                    throw new APIManagementException("External tier is not configured for local tier: "
+                            + localTierName);
+                }
+                return tierMapping.getRemotePlanReference();
+            }
+        }
+        throw new APIManagementException("No external tier mapping found for local tier: " + localTierName
+                + " in environment: " + environmentId);
     }
 
     /**
@@ -361,14 +355,6 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         com.google.gson.JsonObject policyReference = new com.google.gson.JsonObject();
         policyReference.addProperty(USAGE_PLAN_ID, policyId);
         return policyReference.toString();
-    }
-
-    /**
-     * Indicates that AWS can list remote usage plans for Admin plan mapping.
-     */
-    @Override
-    public boolean supportsRemotePlanListing() {
-        return true;
     }
 
     /**

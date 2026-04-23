@@ -36,12 +36,8 @@ import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.Environment;
-import org.wso2.carbon.apimgt.api.model.ExternalSubscriptionPolicy;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Azure implementation of federated API key management.
@@ -178,7 +174,7 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * No-op because Azure models the API-key scope on the subscription itself, not as a separate plan association.
      */
     @Override
-    public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference) {
+    public void applyRateLimitPolicy(FederatedApiKeyContext context) {
         if (log.isDebugEnabled()) {
             log.debug("Skipping rate-limit policy association for Azure API-bound key. keyUuid="
                     + (context != null ? context.getApiKeyUuid() : null));
@@ -189,7 +185,7 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * No-op because Azure has no separate remote plan association to remove for API-bound subscriptions.
      */
     @Override
-    public void removeRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference) {
+    public void removeRateLimitPolicy(FederatedApiKeyContext context) {
         if (log.isDebugEnabled()) {
             log.debug("Skipping rate-limit policy dissociation for Azure API-bound key. keyUuid="
                     + (context != null ? context.getApiKeyUuid() : null));
@@ -210,25 +206,6 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
     @Override
     public boolean isApiKeySupport() {
         return true;
-    }
-
-    /**
-     * Azure does not list separate remote plans for Admin plan mapping.
-     */
-    @Override
-    public boolean supportsRemotePlanListing() {
-        return false;
-    }
-
-    /**
-     * Returns an empty remote-plan list because Azure API-bound keys do not require separate plan mappings.
-     */
-    @Override
-    public List<ExternalSubscriptionPolicy> listRateLimitPolicies(Environment environment)
-            throws APIManagementException {
-        // Azure API-bound keys don't require separate rate limit policies
-        // Rate limiting is configured at the API/Product level in Azure
-        return new ArrayList<>();
     }
 
     /**

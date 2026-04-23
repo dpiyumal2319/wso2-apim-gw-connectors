@@ -130,4 +130,8 @@ public class AWSGatewayConfiguration implements GatewayAgentConfiguration {
 
         return AWSConstants.AWS_API_EXECUTION_URL_TEMPLATE;
     }
+
+    public String getPlanMappingIdentifierLabel() {
+        return "Usage Plan ID";
+    }
 }

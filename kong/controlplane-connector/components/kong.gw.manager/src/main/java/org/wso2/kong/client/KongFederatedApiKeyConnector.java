@@ -33,9 +33,9 @@ import org.apache.http.impl.client.HttpClients;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.Environment;
-import org.wso2.carbon.apimgt.api.model.ExternalSubscriptionPolicy;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
+import org.wso2.carbon.apimgt.api.model.GatewayTierMapping;
 import org.wso2.carbon.apimgt.impl.kmclient.ApacheFeignHttpClient;
 import org.wso2.kong.client.model.KongAcl;
 import org.wso2.kong.client.model.KongConsumer;
@@ -46,9 +46,7 @@ import org.wso2.kong.client.model.PagedResponse;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Kong implementation of federated API key management.
@@ -74,6 +72,8 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private KongKonnectApi apiGatewayClient;
     private String controlPlaneId;
     private String deploymentType;
+    private String environmentId;
+    private List<GatewayTierMapping> tierMappings = new ArrayList<>();
 
     /**
      * Initializes the Kong Konnect client from the environment URL, control plane ID, and access token.
@@ -85,6 +85,9 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             String adminUrl = environment.getAdditionalProperties().get(KongConstants.KONG_ADMIN_URL);
             this.controlPlaneId = environment.getAdditionalProperties().get(KongConstants.KONG_CONTROL_PLANE_ID);
             String authToken = environment.getAdditionalProperties().get(KongConstants.KONG_AUTH_TOKEN);
+            this.environmentId = environment.getUuid();
+            this.tierMappings = environment.getTierMappings() != null
+                    ? new ArrayList<>(environment.getTierMappings()) : new ArrayList<>();
 
             if (KongConstants.KONG_KUBERNETES_DEPLOYMENT.equals(deploymentType)) {
                 throw new APIManagementException("Kong API key federation is not supported for Kubernetes mode");
@@ -222,8 +225,11 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Adds ACL and consumer-group associations for the mapped remote consumer group.
      */
     @Override
-    public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
-            throws APIManagementException {
+    public void applyRateLimitPolicy(FederatedApiKeyContext context) throws APIManagementException {
+        String remotePolicyReference = resolveRemotePolicyReference(context, true);
+        if (StringUtils.isBlank(remotePolicyReference)) {
+            return;
+        }
         String consumerId = resolveConsumerId(context);
         if (StringUtils.isBlank(consumerId)) {
             throw new APIManagementException("Remote API key ID is required for Kong association");
@@ -253,8 +259,11 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Removes ACL and consumer-group associations for the mapped remote consumer group.
      */
     @Override
-    public void removeRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
-            throws APIManagementException {
+    public void removeRateLimitPolicy(FederatedApiKeyContext context) throws APIManagementException {
+        String remotePolicyReference = resolveRemotePolicyReference(context, true);
+        if (StringUtils.isBlank(remotePolicyReference)) {
+            return;
+        }
         String consumerId = resolveConsumerId(context);
         if (StringUtils.isBlank(consumerId)) {
             return;
@@ -297,33 +306,29 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
     }
 
-    /**
-     * Lists Kong consumer groups as remote subscription policies for Admin plan mapping.
-     */
-    @Override
-    public List<ExternalSubscriptionPolicy> listRateLimitPolicies(Environment environment)
+    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalTier)
             throws APIManagementException {
-        List<ExternalSubscriptionPolicy> rateLimitPolicies = new ArrayList<>();
-        try {
-            PagedResponse<KongConsumerGroup> response = apiGatewayClient.listConsumerGroups(controlPlaneId,
-                    KongConstants.DEFAULT_CONSUMER_GROUP_LIST_LIMIT);
-            if (response == null || response.getData() == null) {
-                return rateLimitPolicies;
-            }
-            for (KongConsumerGroup group : response.getData()) {
-                if (group == null || StringUtils.isBlank(group.getId())) {
-                    continue;
-                }
-                Map<String, String> limits = new HashMap<>();
-                ExternalSubscriptionPolicy policy = new ExternalSubscriptionPolicy(group.getId(),
-                        StringUtils.defaultIfBlank(group.getName(), group.getId()), "", limits);
-                policy.setReference(buildRemotePolicyReference(group.getId()));
-                rateLimitPolicies.add(policy);
-            }
-            return rateLimitPolicies;
-        } catch (Exception e) {
-            throw new APIManagementException("Failed to list Kong consumer groups: " + e.getMessage(), e);
+        if (tierMappings == null || tierMappings.isEmpty()) {
+            return null;
         }
+        String localTierName = context != null ? context.getLocalTierName() : null;
+        if (StringUtils.isBlank(localTierName)) {
+            if (requireLocalTier) {
+                throw new APIManagementException("Local application tier is required for external tier mapping");
+            }
+            return null;
+        }
+        for (GatewayTierMapping tierMapping : tierMappings) {
+            if (tierMapping != null && StringUtils.equalsIgnoreCase(localTierName, tierMapping.getLocalTierName())) {
+                if (StringUtils.isBlank(tierMapping.getRemotePlanReference())) {
+                    throw new APIManagementException("External tier is not configured for local tier: "
+                            + localTierName);
+                }
+                return tierMapping.getRemotePlanReference();
+            }
+        }
+        throw new APIManagementException("No external tier mapping found for local tier: " + localTierName
+                + " in environment: " + environmentId);
     }
 
     /**
@@ -360,14 +365,6 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         } catch (Exception e) {
             throw new APIManagementException("Invalid Kong API key reference artifact", e);
         }
-    }
-
-    /**
-     * Indicates that Kong can list remote consumer groups for Admin plan mapping.
-     */
-    @Override
-    public boolean supportsRemotePlanListing() {
-        return true;
     }
 
     /**

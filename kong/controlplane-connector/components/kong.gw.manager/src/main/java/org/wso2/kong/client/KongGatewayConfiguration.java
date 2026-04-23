@@ -144,4 +144,8 @@ public class KongGatewayConfiguration implements GatewayAgentConfiguration {
     public List<String> getSupportedModes() {
         return Arrays.asList(GatewayMode.READ_ONLY.getMode());
     }
+
+    public String getPlanMappingIdentifierLabel() {
+        return "Consumer Group ID";
+    }
 }
