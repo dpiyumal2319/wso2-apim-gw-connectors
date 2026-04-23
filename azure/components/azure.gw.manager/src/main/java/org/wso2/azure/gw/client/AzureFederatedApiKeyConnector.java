@@ -50,6 +50,7 @@ import java.util.List;
 public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
 
     private static final Log log = LogFactory.getLog(AzureFederatedApiKeyConnector.class);
+    private static final String SUBSCRIPTION_NAME = "subscriptionName";
 
     private String resourceGroup;
     private String serviceName;
@@ -117,7 +118,7 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
                     .createOrUpdate(resourceGroup, serviceName, subscriptionName, parameters);
 
             return FederatedApiKeyCreationResult.builder()
-                    .remoteCredentialId(subscription.name())
+                    .referenceArtifact(buildApiKeyReferenceArtifact(subscription.name()))
                     .build();
         } catch (Exception e) {
             throw new APIManagementException("Error creating API key in Azure", e);
@@ -125,15 +126,49 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
     }
 
     /**
-     * Deletes the Azure APIM subscription identified by the stored remote credential ID.
+     * Replaces an Azure APIM subscription key in place and returns the retained subscription name.
+     */
+    public FederatedApiKeyCreationResult replaceApiKey(FederatedApiKeyContext context) throws APIManagementException {
+        if (context == null || StringUtils.isBlank(context.getApiReferenceArtifact())
+                || StringUtils.isBlank(context.getApiKeyValue())) {
+            throw new APIManagementException("API reference artifact and API key value are required");
+        }
+        try {
+            String externalApiId = extractAzureApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+            String scope = buildApiScope(externalApiId);
+            String subscriptionName = StringUtils.defaultIfBlank(resolveSubscriptionName(context),
+                    generateSubscriptionName(context));
+            String displayName = generateDisplayName(context);
+
+            SubscriptionCreateParameters parameters = new SubscriptionCreateParameters()
+                    .withScope(scope)
+                    .withDisplayName(displayName)
+                    .withState(SubscriptionState.ACTIVE)
+                    .withAllowTracing(false)
+                    .withPrimaryKey(context.getApiKeyValue());
+
+            SubscriptionContract subscription = manager.subscriptions()
+                    .createOrUpdate(resourceGroup, serviceName, subscriptionName, parameters);
+
+            return FederatedApiKeyCreationResult.builder()
+                    .referenceArtifact(buildApiKeyReferenceArtifact(subscription.name()))
+                    .build();
+        } catch (Exception e) {
+            throw new APIManagementException("Error replacing API key in Azure", e);
+        }
+    }
+
+    /**
+     * Deletes the Azure APIM subscription identified by the stored connector-owned reference artifact.
      */
     @Override
     public void revokeApiKey(FederatedApiKeyContext context) throws APIManagementException {
-        if (context == null || StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String subscriptionName = resolveSubscriptionName(context);
+        if (StringUtils.isBlank(subscriptionName)) {
             return;
         }
         try {
-            manager.subscriptions().delete(resourceGroup, serviceName, context.getRemoteApiKeyId(), "*");
+            manager.subscriptions().delete(resourceGroup, serviceName, subscriptionName, "*");
         } catch (Exception e) {
             throw new APIManagementException("Error revoking API key in Azure", e);
         }
@@ -255,5 +290,32 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
             return context.getApiKeyName();
         }
         return "WSO2 API key";
+    }
+
+    private String buildApiKeyReferenceArtifact(String subscriptionName) {
+        JsonObject referenceArtifact = new JsonObject();
+        referenceArtifact.addProperty(SUBSCRIPTION_NAME, subscriptionName);
+        return referenceArtifact.toString();
+    }
+
+    private String resolveSubscriptionName(FederatedApiKeyContext context) throws APIManagementException {
+        if (context == null || StringUtils.isBlank(context.getApiKeyReferenceArtifact())) {
+            return null;
+        }
+        try {
+            JsonObject referenceArtifact = JsonParser.parseString(context.getApiKeyReferenceArtifact())
+                    .getAsJsonObject();
+            if (referenceArtifact.has(SUBSCRIPTION_NAME) && !referenceArtifact.get(SUBSCRIPTION_NAME).isJsonNull()) {
+                String subscriptionName = referenceArtifact.get(SUBSCRIPTION_NAME).getAsString();
+                if (StringUtils.isNotBlank(subscriptionName)) {
+                    return subscriptionName;
+                }
+            }
+            throw new APIManagementException("Azure API key reference artifact must contain subscriptionName");
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Invalid Azure API key reference artifact", e);
+        }
     }
 }

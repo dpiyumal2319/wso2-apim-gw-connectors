@@ -57,6 +57,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
 
     private static final Log log = LogFactory.getLog(AWSFederatedApiKeyConnector.class);
     private static final int MAX_TAG_LENGTH = 256;
+    private static final String API_KEY_ID = "apiKeyId";
     private static final String USAGE_PLAN_ID = "usagePlanId";
 
     private static final String TAG_API_ID = "wso2:api-id";
@@ -129,7 +130,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             CreateApiKeyResponse response = apiGatewayClient.createApiKey(request);
             
             return FederatedApiKeyCreationResult.builder()
-                    .remoteCredentialId(response.id())
+                    .referenceArtifact(buildApiKeyReferenceArtifact(response.id()))
                     .build();
         } catch (Exception e) {
             throw new APIManagementException("Error creating API key in AWS", e);
@@ -137,16 +138,43 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     }
 
     /**
-     * Deletes the AWS API key identified by the stored remote credential ID.
+     * Replaces an AWS API key by creating a new key, migrating the mapped usage-plan association, and deleting the old
+     * key. AWS API Gateway does not support patching an API key's value in place.
+     */
+    public FederatedApiKeyCreationResult replaceApiKey(FederatedApiKeyContext context) throws APIManagementException {
+        if (context == null || StringUtils.isBlank(context.getApiKeyValue())) {
+            throw new APIManagementException("API key value is required to replace AWS API key");
+        }
+        FederatedApiKeyCreationResult result = createApiKey(context);
+        if (result == null || StringUtils.isBlank(result.getReferenceArtifact())) {
+            throw new APIManagementException("AWS API key replacement did not return a reference artifact");
+        }
+        FederatedApiKeyContext newKeyContext = copyContextWithApiKeyReferenceArtifact(context,
+                result.getReferenceArtifact());
+        try {
+            if (StringUtils.isNotBlank(context.getRemotePolicyReference())) {
+                applyRateLimitPolicy(newKeyContext, context.getRemotePolicyReference());
+            }
+        } catch (APIManagementException e) {
+            revokeApiKey(newKeyContext);
+            throw e;
+        }
+        revokeApiKey(context);
+        return result;
+    }
+
+    /**
+     * Deletes the AWS API key identified by the stored connector-owned reference artifact.
      */
     @Override
     public void revokeApiKey(FederatedApiKeyContext context) throws APIManagementException {
-        if (StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String apiKeyId = resolveApiKeyId(context);
+        if (StringUtils.isBlank(apiKeyId)) {
             return;
         }
         try {
             DeleteApiKeyRequest request = DeleteApiKeyRequest.builder()
-                    .apiKey(context.getRemoteApiKeyId())
+                    .apiKey(apiKeyId)
                     .build();
             apiGatewayClient.deleteApiKey(request);
         } catch (Exception e) {
@@ -160,7 +188,8 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     @Override
     public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
             throws APIManagementException {
-        if (StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String apiKeyId = resolveApiKeyId(context);
+        if (StringUtils.isBlank(apiKeyId)) {
             throw new APIManagementException("Remote API key ID is required for rate limit policy association");
         }
         String policyId = resolveRemotePolicyId(remotePolicyReference);
@@ -170,7 +199,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         try {
             CreateUsagePlanKeyRequest request = CreateUsagePlanKeyRequest.builder()
                     .usagePlanId(policyId)
-                    .keyId(context.getRemoteApiKeyId())
+                    .keyId(apiKeyId)
                     .keyType(USAGE_PLAN_KEY_TYPE_API_KEY)
                     .build();
             apiGatewayClient.createUsagePlanKey(request);
@@ -189,7 +218,8 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     @Override
     public void removeRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
             throws APIManagementException {
-        if (StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String apiKeyId = resolveApiKeyId(context);
+        if (StringUtils.isBlank(apiKeyId)) {
             return;
         }
         String policyId = resolveRemotePolicyId(remotePolicyReference);
@@ -199,7 +229,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         try {
             DeleteUsagePlanKeyRequest deleteRequest = DeleteUsagePlanKeyRequest.builder()
                     .usagePlanId(policyId)
-                    .keyId(context.getRemoteApiKeyId())
+                    .keyId(apiKeyId)
                     .build();
             apiGatewayClient.deleteUsagePlanKey(deleteRequest);
         } catch (NotFoundException e) {
@@ -208,6 +238,52 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             }
         } catch (Exception e) {
             throw new APIManagementException("Error removing API key usage plan association in AWS", e);
+        }
+    }
+
+    private FederatedApiKeyContext copyContextWithApiKeyReferenceArtifact(FederatedApiKeyContext context,
+                                                                          String apiKeyReferenceArtifact) {
+        return FederatedApiKeyContext.builder()
+                .apiUuid(context.getApiUuid())
+                .apiName(context.getApiName())
+                .apiReferenceArtifact(context.getApiReferenceArtifact())
+                .apiKeyUuid(context.getApiKeyUuid())
+                .apiKeyName(context.getApiKeyName())
+                .apiKeyValue(context.getApiKeyValue())
+                .apiKeyReferenceArtifact(apiKeyReferenceArtifact)
+                .remotePolicyReference(context.getRemotePolicyReference())
+                .authzUser(context.getAuthzUser())
+                .applicationUuid(context.getApplicationUuid())
+                .organizationId(context.getOrganizationId())
+                .environmentId(context.getEnvironmentId())
+                .validityPeriod(context.getValidityPeriod())
+                .permittedIP(context.getPermittedIP())
+                .permittedReferer(context.getPermittedReferer())
+                .build();
+    }
+
+    private String buildApiKeyReferenceArtifact(String apiKeyId) {
+        com.google.gson.JsonObject referenceArtifact = new com.google.gson.JsonObject();
+        referenceArtifact.addProperty(API_KEY_ID, apiKeyId);
+        return referenceArtifact.toString();
+    }
+
+    private String resolveApiKeyId(FederatedApiKeyContext context) throws APIManagementException {
+        if (context == null || StringUtils.isBlank(context.getApiKeyReferenceArtifact())) {
+            return null;
+        }
+        try {
+            com.google.gson.JsonObject referenceArtifact = com.google.gson.JsonParser
+                    .parseString(context.getApiKeyReferenceArtifact()).getAsJsonObject();
+            if (!referenceArtifact.has(API_KEY_ID) || referenceArtifact.get(API_KEY_ID).isJsonNull()
+                    || StringUtils.isBlank(referenceArtifact.get(API_KEY_ID).getAsString())) {
+                throw new APIManagementException("AWS API key reference artifact must contain apiKeyId");
+            }
+            return referenceArtifact.get(API_KEY_ID).getAsString();
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Invalid AWS API key reference artifact", e);
         }
     }
 

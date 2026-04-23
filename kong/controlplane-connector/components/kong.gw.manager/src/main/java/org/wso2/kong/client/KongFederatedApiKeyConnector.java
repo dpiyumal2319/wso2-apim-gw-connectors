@@ -60,6 +60,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final int HTTP_CONFLICT = 409;
     private static final int MAX_TAG_LENGTH = 256;
     private static final String CONSUMER_GROUP_ID = "consumerGroupId";
+    private static final String CONSUMER_ID = "consumerId";
     private static final String KONG_REFERENCE_UUID = "uuid";
     private static final String TAG_API_ID = "wso2:api-id";
     private static final String TAG_API_UUID = "wso2:api-uuid";
@@ -146,7 +147,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             apiGatewayClient.createAcl(controlPlaneId, consumerId, new KongAcl(buildApiAclGroup(remoteApiId)));
             
             return FederatedApiKeyCreationResult.builder()
-                    .remoteCredentialId(consumerId)
+                    .referenceArtifact(buildApiKeyReferenceArtifact(consumerId))
                     .build();
         } catch (KongGatewayException e) {
             if (e.getStatusCode() == HTTP_CONFLICT) {
@@ -162,15 +163,52 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     }
 
     /**
-     * Deletes the Kong consumer identified by the stored remote credential ID.
+     * Replaces the key-auth credential on the existing Kong consumer and keeps consumer-level ACL/group associations.
+     */
+    public FederatedApiKeyCreationResult replaceApiKey(FederatedApiKeyContext context) throws APIManagementException {
+        if (context == null || StringUtils.isBlank(context.getApiKeyValue())) {
+            throw new APIManagementException("API key value is required to replace Kong API key");
+        }
+        String consumerId = resolveConsumerId(context);
+        if (StringUtils.isBlank(consumerId)) {
+            return createApiKey(context);
+        }
+
+        List<KongKeyAuth> existingCredentials = listKeyAuthCredentials(consumerId);
+        KongKeyAuth keyAuthRequest = new KongKeyAuth();
+        keyAuthRequest.setKey(context.getApiKeyValue());
+        if (context.getValidityPeriod() != null && context.getValidityPeriod() > 0) {
+            keyAuthRequest.setTtl(context.getValidityPeriod());
+        }
+        try {
+            String remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
+            keyAuthRequest.setTags(buildMetadataTags(context, remoteApiId));
+            KongKeyAuth replacement = createKeyAuthWithTagFallback(consumerId, keyAuthRequest);
+            if (replacement == null || StringUtils.isBlank(replacement.getId())) {
+                throw new APIManagementException("Failed to create replacement Kong key-auth credential");
+            }
+            deleteOldKeyAuthCredentials(consumerId, existingCredentials, replacement.getId());
+            return FederatedApiKeyCreationResult.builder()
+                    .referenceArtifact(buildApiKeyReferenceArtifact(consumerId))
+                    .build();
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Error replacing API key in Kong", e);
+        }
+    }
+
+    /**
+     * Deletes the Kong consumer identified by the stored connector-owned reference artifact.
      */
     @Override
     public void revokeApiKey(FederatedApiKeyContext context) throws APIManagementException {
-        if (context == null || StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String consumerId = resolveConsumerId(context);
+        if (StringUtils.isBlank(consumerId)) {
             return;
         }
         try {
-            apiGatewayClient.deleteConsumer(controlPlaneId, context.getRemoteApiKeyId());
+            apiGatewayClient.deleteConsumer(controlPlaneId, consumerId);
         } catch (KongGatewayException e) {
             if (e.getStatusCode() != HTTP_NOT_FOUND) {
                 throw new APIManagementException("Error revoking API key in Kong: " + e.getMessage(), e);
@@ -186,7 +224,8 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     @Override
     public void applyRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
             throws APIManagementException {
-        if (context == null || StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String consumerId = resolveConsumerId(context);
+        if (StringUtils.isBlank(consumerId)) {
             throw new APIManagementException("Remote API key ID is required for Kong association");
         }
         String policyId = resolveRemotePolicyId(remotePolicyReference);
@@ -200,9 +239,9 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
                 throw new APIManagementException("Mapped Kong consumer group was not found: " + policyId);
             }
 
-            createAclIfAbsent(context.getRemoteApiKeyId(), buildTierAclGroup(policyId));
-            createAclIfAbsent(context.getRemoteApiKeyId(), buildSubscriptionAclGroup(remoteApiId, policyId));
-            addConsumerToGroupIfAbsent(context.getRemoteApiKeyId(), policyId);
+            createAclIfAbsent(consumerId, buildTierAclGroup(policyId));
+            createAclIfAbsent(consumerId, buildSubscriptionAclGroup(remoteApiId, policyId));
+            addConsumerToGroupIfAbsent(consumerId, policyId);
         } catch (APIManagementException e) {
             throw e;
         } catch (Exception e) {
@@ -216,7 +255,8 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     @Override
     public void removeRateLimitPolicy(FederatedApiKeyContext context, String remotePolicyReference)
             throws APIManagementException {
-        if (context == null || StringUtils.isBlank(context.getRemoteApiKeyId())) {
+        String consumerId = resolveConsumerId(context);
+        if (StringUtils.isBlank(consumerId)) {
             return;
         }
         String policyId = resolveRemotePolicyId(remotePolicyReference);
@@ -228,9 +268,9 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             if (StringUtils.isNotBlank(context.getApiReferenceArtifact())) {
                 remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
             }
-            removeAclGroup(context.getRemoteApiKeyId(), buildTierAclGroup(policyId));
-            removeAclGroup(context.getRemoteApiKeyId(), buildSubscriptionAclGroup(remoteApiId, policyId));
-            removeConsumerFromGroup(context.getRemoteApiKeyId(), policyId);
+            removeAclGroup(consumerId, buildTierAclGroup(policyId));
+            removeAclGroup(consumerId, buildSubscriptionAclGroup(remoteApiId, policyId));
+            removeConsumerFromGroup(consumerId, policyId);
         } catch (Exception e) {
             throw new APIManagementException("Error removing Kong consumer group associations", e);
         }
@@ -293,6 +333,33 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         JsonObject policyReference = new JsonObject();
         policyReference.addProperty(CONSUMER_GROUP_ID, policyId);
         return policyReference.toString();
+    }
+
+    private String buildApiKeyReferenceArtifact(String consumerId) {
+        JsonObject referenceArtifact = new JsonObject();
+        referenceArtifact.addProperty(CONSUMER_ID, consumerId);
+        return referenceArtifact.toString();
+    }
+
+    private String resolveConsumerId(FederatedApiKeyContext context) throws APIManagementException {
+        if (context == null || StringUtils.isBlank(context.getApiKeyReferenceArtifact())) {
+            return null;
+        }
+        try {
+            JsonObject referenceArtifact = JsonParser.parseString(context.getApiKeyReferenceArtifact())
+                    .getAsJsonObject();
+            if (referenceArtifact.has(CONSUMER_ID) && !referenceArtifact.get(CONSUMER_ID).isJsonNull()) {
+                String consumerId = referenceArtifact.get(CONSUMER_ID).getAsString();
+                if (StringUtils.isNotBlank(consumerId)) {
+                    return consumerId;
+                }
+            }
+            throw new APIManagementException("Kong API key reference artifact must contain consumerId");
+        } catch (APIManagementException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new APIManagementException("Invalid Kong API key reference artifact", e);
+        }
     }
 
     /**
@@ -410,6 +477,46 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      */
     private void removeAclGroup(String consumerId, String group) throws APIManagementException {
         removeAclsByPredicate(consumerId, acl -> acl != null && StringUtils.equals(acl.getGroup(), group));
+    }
+
+    private List<KongKeyAuth> listKeyAuthCredentials(String consumerId) throws APIManagementException {
+        try {
+            PagedResponse<KongKeyAuth> response = apiGatewayClient.listKeyAuth(controlPlaneId, consumerId,
+                    KongConstants.DEFAULT_KEY_AUTH_LIST_LIMIT);
+            if (response == null || response.getData() == null) {
+                return Collections.emptyList();
+            }
+            return response.getData();
+        } catch (KongGatewayException e) {
+            if (e.getStatusCode() == HTTP_NOT_FOUND) {
+                throw new APIManagementException("Kong consumer was not found for API key replacement: "
+                        + consumerId, e);
+            }
+            throw new APIManagementException("Error listing Kong key-auth credentials for consumer: " + consumerId, e);
+        } catch (Exception e) {
+            throw new APIManagementException("Error listing Kong key-auth credentials for consumer: " + consumerId, e);
+        }
+    }
+
+    private void deleteOldKeyAuthCredentials(String consumerId, List<KongKeyAuth> existingCredentials,
+                                             String replacementCredentialId) throws APIManagementException {
+        for (KongKeyAuth credential : existingCredentials) {
+            if (credential == null || StringUtils.isBlank(credential.getId())
+                    || StringUtils.equals(credential.getId(), replacementCredentialId)) {
+                continue;
+            }
+            try {
+                apiGatewayClient.deleteKeyAuth(controlPlaneId, consumerId, credential.getId());
+            } catch (KongGatewayException e) {
+                if (e.getStatusCode() != HTTP_NOT_FOUND) {
+                    throw new APIManagementException("Error deleting old Kong key-auth credential: "
+                            + credential.getId(), e);
+                }
+            } catch (Exception e) {
+                throw new APIManagementException("Error deleting old Kong key-auth credential: "
+                        + credential.getId(), e);
+            }
+        }
     }
 
     /**
