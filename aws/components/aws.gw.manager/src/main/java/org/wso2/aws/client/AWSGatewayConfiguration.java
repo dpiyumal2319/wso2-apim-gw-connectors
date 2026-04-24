@@ -29,14 +29,22 @@ import org.wso2.aws.client.util.AWSAPIUtil;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.model.ConfigurationDto;
 import org.wso2.carbon.apimgt.api.model.GatewayAgentConfiguration;
+import org.wso2.carbon.apimgt.api.model.GatewayConfigurationContext;
 import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
+import org.wso2.carbon.apimgt.api.model.policy.PolicyConstants;
+import org.wso2.carbon.apimgt.api.model.policy.SubscriptionPolicy;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 
 /**
@@ -49,6 +57,12 @@ import java.util.List;
 )
 public class AWSGatewayConfiguration implements GatewayAgentConfiguration {
     private static final Log log = LogFactory.getLog(AWSAPIUtil.class);
+    private static final String PLAN_MAPPING_CONFIG_NAME = "plan_mapping";
+    private static final String MAPPING_TYPE = "mapping";
+    private static final String LEFT_LABEL_KEY = "left";
+    private static final String RIGHT_LABEL_KEY = "right";
+    private static final Set<String> NON_MAPPABLE_POLICIES = new HashSet<>(
+            java.util.Arrays.asList("Unauthenticated", "DefaultSubscriptionless", "AsyncDefaultSubscriptionless"));
 
     @Override
     public String getGatewayDeployerImplementation() {
@@ -85,6 +99,13 @@ public class AWSGatewayConfiguration implements GatewayAgentConfiguration {
                 false,
                 Collections.emptyList(), false));
 
+        return configurationDtoList;
+    }
+
+    @Override
+    public List<ConfigurationDto> getConnectionConfigurations(GatewayConfigurationContext context) {
+        List<ConfigurationDto> configurationDtoList = new ArrayList<>(getConnectionConfigurations());
+        configurationDtoList.add(buildPlanMappingConfiguration(context));
         return configurationDtoList;
     }
 
@@ -131,7 +152,68 @@ public class AWSGatewayConfiguration implements GatewayAgentConfiguration {
         return AWSConstants.AWS_API_EXECUTION_URL_TEMPLATE;
     }
 
-    public String getPlanMappingIdentifierLabel() {
-        return "Usage Plan ID";
+    private ConfigurationDto buildPlanMappingConfiguration(GatewayConfigurationContext context) {
+        ConfigurationDto configuration = new ConfigurationDto(PLAN_MAPPING_CONFIG_NAME, "Plan Mapping", MAPPING_TYPE,
+                "Map local WSO2 plans to AWS usage plans.", "", false, false, Collections.emptyList(), false);
+        Map<String, String> labels = new HashMap<>();
+        labels.put(LEFT_LABEL_KEY, "WSO2 Plan");
+        labels.put(RIGHT_LABEL_KEY, "Usage Plan ID");
+        configuration.setLabels(labels);
+        configuration.setValues(buildPlanMappingValues(context));
+        return configuration;
+    }
+
+    private List<Object> buildPlanMappingValues(GatewayConfigurationContext context) {
+        List<Object> values = new ArrayList<>();
+        if (context == null || context.getSubscriptionPolicies() == null) {
+            return values;
+        }
+        Set<String> supportedApiTypes = resolveSupportedApiTypes();
+        for (SubscriptionPolicy policy : context.getSubscriptionPolicies()) {
+            if (policy == null || policy.getUUID() == null || policy.getPolicyName() == null) {
+                continue;
+            }
+            if (NON_MAPPABLE_POLICIES.contains(policy.getPolicyName())) {
+                continue;
+            }
+            String apiType = resolvePolicyApiType(policy);
+            if (apiType == null || !supportedApiTypes.contains(apiType)) {
+                continue;
+            }
+            Map<String, String> value = new LinkedHashMap<>();
+            value.put("id", policy.getUUID());
+            value.put("label", policy.getDisplayName() != null ? policy.getDisplayName() : policy.getPolicyName());
+            values.add(value);
+        }
+        return values;
+    }
+
+    private Set<String> resolveSupportedApiTypes() {
+        try {
+            GatewayPortalConfiguration configuration = getGatewayFeatureCatalog();
+            if (configuration != null && configuration.getSupportedAPITypes() != null) {
+                return new HashSet<>(configuration.getSupportedAPITypes());
+            }
+        } catch (APIManagementException e) {
+            log.warn("Failed to resolve AWS supported API types for plan mapping configuration", e);
+        }
+        return Collections.emptySet();
+    }
+
+    private String resolvePolicyApiType(SubscriptionPolicy policy) {
+        if (policy.getDefaultQuotaPolicy() == null || policy.getDefaultQuotaPolicy().getType() == null) {
+            return null;
+        }
+        String type = policy.getDefaultQuotaPolicy().getType();
+        if (PolicyConstants.REQUEST_COUNT_TYPE.equalsIgnoreCase(type)) {
+            return "rest";
+        }
+        if (PolicyConstants.EVENT_COUNT_TYPE.equalsIgnoreCase(type)) {
+            return "async";
+        }
+        if (PolicyConstants.AI_API_QUOTA_TYPE.equalsIgnoreCase(type)) {
+            return "ai-api";
+        }
+        return null;
     }
 }

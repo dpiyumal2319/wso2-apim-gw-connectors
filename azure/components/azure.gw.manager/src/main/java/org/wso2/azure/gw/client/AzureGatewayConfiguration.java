@@ -28,6 +28,7 @@ import org.osgi.service.component.annotations.Component;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.model.ConfigurationDto;
 import org.wso2.carbon.apimgt.api.model.GatewayAgentConfiguration;
+import org.wso2.carbon.apimgt.api.model.GatewayConfigurationContext;
 import org.wso2.carbon.apimgt.api.model.GatewayPortalConfiguration;
 
 import java.io.InputStream;
@@ -103,6 +104,14 @@ public class AzureGatewayConfiguration implements GatewayAgentConfiguration {
                 Collections.emptyList(), false));
 
         return configurationDtoList;
+    }
+
+    /**
+     * Azure does not expose connector-owned mapping configuration.
+     */
+    @Override
+    public List<ConfigurationDto> getConnectionConfigurations(GatewayConfigurationContext context) {
+        return getConnectionConfigurations();
     }
 
     /**

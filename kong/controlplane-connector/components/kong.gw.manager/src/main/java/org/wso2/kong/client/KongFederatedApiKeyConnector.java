@@ -35,7 +35,6 @@ import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
-import org.wso2.carbon.apimgt.api.model.GatewayTierMapping;
 import org.wso2.carbon.apimgt.impl.kmclient.ApacheFeignHttpClient;
 import org.wso2.kong.client.model.KongAcl;
 import org.wso2.kong.client.model.KongConsumer;
@@ -57,7 +56,6 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final int HTTP_NOT_FOUND = 404;
     private static final int HTTP_CONFLICT = 409;
     private static final int MAX_TAG_LENGTH = 256;
-    private static final String CONSUMER_GROUP_ID = "consumerGroupId";
     private static final String CONSUMER_ID = "consumerId";
     private static final String KONG_REFERENCE_UUID = "uuid";
     private static final String TAG_API_ID = "wso2:api-id";
@@ -68,12 +66,13 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final String TAG_VALIDITY_PERIOD = "wso2:key-validity-period";
     private static final String TAG_PERMITTED_IP = "wso2:key-permitted-ip";
     private static final String TAG_PERMITTED_REFERER = "wso2:key-permitted-referer";
+    private static final String PLAN_MAPPING_PROPERTY_PREFIX = "plan_mapping.";
 
     private KongKonnectApi apiGatewayClient;
     private String controlPlaneId;
     private String deploymentType;
     private String environmentId;
-    private List<GatewayTierMapping> tierMappings = new ArrayList<>();
+    private final List<LocalPolicyRemoteMapping> planMappings = new ArrayList<>();
 
     /**
      * Initializes the Kong Konnect client from the environment URL, control plane ID, and access token.
@@ -86,8 +85,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             this.controlPlaneId = environment.getAdditionalProperties().get(KongConstants.KONG_CONTROL_PLANE_ID);
             String authToken = environment.getAdditionalProperties().get(KongConstants.KONG_AUTH_TOKEN);
             this.environmentId = environment.getUuid();
-            this.tierMappings = environment.getTierMappings() != null
-                    ? new ArrayList<>(environment.getTierMappings()) : new ArrayList<>();
+            loadPlanMappings(environment);
 
             if (KongConstants.KONG_KUBERNETES_DEPLOYMENT.equals(deploymentType)) {
                 throw new APIManagementException("Kong API key federation is not supported for Kubernetes mode");
@@ -245,7 +243,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
                 throw new APIManagementException("Mapped Kong consumer group was not found: " + policyId);
             }
 
-            createAclIfAbsent(consumerId, buildTierAclGroup(policyId));
+            createAclIfAbsent(consumerId, buildPlanAclGroup(policyId));
             createAclIfAbsent(consumerId, buildSubscriptionAclGroup(remoteApiId, policyId));
             addConsumerToGroupIfAbsent(consumerId, policyId);
         } catch (APIManagementException e) {
@@ -277,7 +275,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             if (StringUtils.isNotBlank(context.getApiReferenceArtifact())) {
                 remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
             }
-            removeAclGroup(consumerId, buildTierAclGroup(policyId));
+            removeAclGroup(consumerId, buildPlanAclGroup(policyId));
             removeAclGroup(consumerId, buildSubscriptionAclGroup(remoteApiId, policyId));
             removeConsumerFromGroup(consumerId, policyId);
         } catch (Exception e) {
@@ -286,58 +284,35 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     }
 
     /**
-     * Extracts the Kong consumer group ID from the strict connector-owned remote plan reference.
+     * Extracts the Kong consumer group ID from the connector-owned flat environment mapping.
      */
-    private String resolveRemotePolicyId(String remotePolicyReference) throws APIManagementException {
-        if (StringUtils.isBlank(remotePolicyReference)) {
-            return null;
-        }
-        try {
-            JsonObject policyJson = JsonParser.parseString(remotePolicyReference).getAsJsonObject();
-            if (!policyJson.has(CONSUMER_GROUP_ID) || policyJson.get(CONSUMER_GROUP_ID).isJsonNull()
-                    || StringUtils.isBlank(policyJson.get(CONSUMER_GROUP_ID).getAsString())) {
-                throw new APIManagementException("Kong remote policy reference must contain consumerGroupId");
-            }
-            return policyJson.get(CONSUMER_GROUP_ID).getAsString();
-        } catch (APIManagementException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new APIManagementException("Invalid Kong remote policy reference", e);
-        }
+    private String resolveRemotePolicyId(String remotePolicyReference) {
+        return StringUtils.trimToNull(remotePolicyReference);
     }
 
-    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalTier)
+    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalPolicy)
             throws APIManagementException {
-        if (tierMappings == null || tierMappings.isEmpty()) {
+        if (planMappings.isEmpty()) {
             return null;
         }
-        String localTierName = context != null ? context.getLocalTierName() : null;
-        if (StringUtils.isBlank(localTierName)) {
-            if (requireLocalTier) {
-                throw new APIManagementException("Local application tier is required for external tier mapping");
+        String localPolicyId = context != null ? context.getLocalPolicyId() : null;
+        if (StringUtils.isBlank(localPolicyId)) {
+            if (requireLocalPolicy) {
+                throw new APIManagementException("Local subscription policy is required for external plan mapping");
             }
             return null;
         }
-        for (GatewayTierMapping tierMapping : tierMappings) {
-            if (tierMapping != null && StringUtils.equalsIgnoreCase(localTierName, tierMapping.getLocalTierName())) {
-                if (StringUtils.isBlank(tierMapping.getRemotePlanReference())) {
-                    throw new APIManagementException("External tier is not configured for local tier: "
-                            + localTierName);
+        for (LocalPolicyRemoteMapping planMapping : planMappings) {
+            if (StringUtils.equals(localPolicyId, planMapping.getLocalPolicyId())) {
+                if (StringUtils.isBlank(planMapping.getRemotePlanReference())) {
+                    throw new APIManagementException("External plan is not configured for local policy: "
+                            + localPolicyId);
                 }
-                return tierMapping.getRemotePlanReference();
+                return planMapping.getRemotePlanReference();
             }
         }
-        throw new APIManagementException("No external tier mapping found for local tier: " + localTierName
+        throw new APIManagementException("No external plan mapping found for local policy: " + localPolicyId
                 + " in environment: " + environmentId);
-    }
-
-    /**
-     * Builds the opaque remote plan reference persisted by API Manager and later returned to this connector.
-     */
-    private String buildRemotePolicyReference(String policyId) {
-        JsonObject policyReference = new JsonObject();
-        policyReference.addProperty(CONSUMER_GROUP_ID, policyId);
-        return policyReference.toString();
     }
 
     private String buildApiKeyReferenceArtifact(String consumerId) {
@@ -560,9 +535,9 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     }
 
     /**
-     * Builds the tier-level ACL group for the mapped remote consumer group.
+     * Builds the plan-level ACL group for the mapped remote consumer group.
      */
-    private String buildTierAclGroup(String remoteUsagePlanId) {
+    private String buildPlanAclGroup(String remoteUsagePlanId) {
         return KongConstants.TIER_ACL_GROUP_PREFIX + remoteUsagePlanId;
     }
 
@@ -706,5 +681,41 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             trimmed = trimmed.substring(0, MAX_TAG_LENGTH);
         }
         tags.add(key + "=" + trimmed);
+    }
+
+    private void loadPlanMappings(Environment environment) throws APIManagementException {
+        planMappings.clear();
+        if (environment.getAdditionalProperties() == null) {
+            return;
+        }
+        for (java.util.Map.Entry<String, String> property : environment.getAdditionalProperties().entrySet()) {
+            String key = property.getKey();
+            if (!StringUtils.startsWith(key, PLAN_MAPPING_PROPERTY_PREFIX)) {
+                continue;
+            }
+            String localPolicyId = StringUtils.removeStart(key, PLAN_MAPPING_PROPERTY_PREFIX);
+            String remotePlanReference = StringUtils.trimToNull(property.getValue());
+            if (StringUtils.isNotBlank(localPolicyId) && remotePlanReference != null) {
+                planMappings.add(new LocalPolicyRemoteMapping(localPolicyId, remotePlanReference));
+            }
+        }
+    }
+
+    private static final class LocalPolicyRemoteMapping {
+        private final String localPolicyId;
+        private final String remotePlanReference;
+
+        private LocalPolicyRemoteMapping(String localPolicyId, String remotePlanReference) {
+            this.localPolicyId = localPolicyId;
+            this.remotePlanReference = remotePlanReference;
+        }
+
+        private String getLocalPolicyId() {
+            return localPolicyId;
+        }
+
+        private String getRemotePlanReference() {
+            return remotePlanReference;
+        }
     }
 }

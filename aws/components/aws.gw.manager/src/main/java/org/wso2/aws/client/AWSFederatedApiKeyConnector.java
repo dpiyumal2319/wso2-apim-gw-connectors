@@ -18,6 +18,8 @@
 
 package org.wso2.aws.client;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -27,7 +29,6 @@ import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
-import org.wso2.carbon.apimgt.api.model.GatewayTierMapping;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.http.SdkHttpClient;
@@ -55,8 +56,6 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final Log log = LogFactory.getLog(AWSFederatedApiKeyConnector.class);
     private static final int MAX_TAG_LENGTH = 256;
     private static final String API_KEY_ID = "apiKeyId";
-    private static final String USAGE_PLAN_ID = "usagePlanId";
-
     private static final String TAG_API_ID = "wso2:api-id";
     private static final String TAG_API_UUID = "wso2:api-uuid";
     private static final String TAG_KEY_UUID = "wso2:key-uuid";
@@ -66,10 +65,11 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final String TAG_PERMITTED_IP = "wso2:key-permitted-ip";
     private static final String TAG_PERMITTED_REFERER = "wso2:key-permitted-referer";
     private static final String USAGE_PLAN_KEY_TYPE_API_KEY = "API_KEY";
+    private static final String PLAN_MAPPING_PROPERTY_PREFIX = "plan_mapping.";
 
     private ApiGatewayClient apiGatewayClient;
     private String environmentId;
-    private List<GatewayTierMapping> tierMappings = new ArrayList<>();
+    private final List<LocalPolicyRemoteMapping> planMappings = new ArrayList<>();
 
     /**
      * Returns the gateway type handled by this connector.
@@ -97,8 +97,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             String accessKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_ACCESS_KEY);
             String secretKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_SECRET_KEY);
             this.environmentId = environment.getUuid();
-            this.tierMappings = environment.getTierMappings() != null
-                    ? new ArrayList<>(environment.getTierMappings()) : new ArrayList<>();
+            loadPlanMappings(environment);
 
             SdkHttpClient httpClient = ApacheHttpClient.builder().build();
             this.apiGatewayClient = ApiGatewayClient.builder()
@@ -265,7 +264,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
                 .apiKeyName(context.getApiKeyName())
                 .apiKeyValue(context.getApiKeyValue())
                 .apiKeyReferenceArtifact(apiKeyReferenceArtifact)
-                .localTierName(context.getLocalTierName())
+                .localPolicyId(context.getLocalPolicyId())
                 .authzUser(context.getAuthzUser())
                 .applicationUuid(context.getApplicationUuid())
                 .organizationId(context.getOrganizationId())
@@ -302,59 +301,35 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
     }
 
     /**
-     * Extracts the AWS usage plan ID from the strict connector-owned remote plan reference.
+     * Extracts the AWS usage plan ID from the connector-owned flat environment mapping.
      */
-    private String resolveRemotePolicyId(String remotePolicyReference) throws APIManagementException {
-        if (StringUtils.isBlank(remotePolicyReference)) {
-            return null;
-        }
-        try {
-            com.google.gson.JsonObject policyJson = com.google.gson.JsonParser.parseString(remotePolicyReference)
-                    .getAsJsonObject();
-            if (!policyJson.has(USAGE_PLAN_ID) || policyJson.get(USAGE_PLAN_ID).isJsonNull()
-                    || StringUtils.isBlank(policyJson.get(USAGE_PLAN_ID).getAsString())) {
-                throw new APIManagementException("AWS remote policy reference must contain usagePlanId");
-            }
-            return policyJson.get(USAGE_PLAN_ID).getAsString();
-        } catch (APIManagementException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new APIManagementException("Invalid AWS remote policy reference", e);
-        }
+    private String resolveRemotePolicyId(String remotePolicyReference) {
+        return StringUtils.trimToNull(remotePolicyReference);
     }
 
-    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalTier)
+    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalPolicy)
             throws APIManagementException {
-        if (tierMappings == null || tierMappings.isEmpty()) {
+        if (planMappings.isEmpty()) {
             return null;
         }
-        String localTierName = context != null ? context.getLocalTierName() : null;
-        if (StringUtils.isBlank(localTierName)) {
-            if (requireLocalTier) {
-                throw new APIManagementException("Local application tier is required for external tier mapping");
+        String localPolicyId = context != null ? context.getLocalPolicyId() : null;
+        if (StringUtils.isBlank(localPolicyId)) {
+            if (requireLocalPolicy) {
+                throw new APIManagementException("Local subscription policy is required for external plan mapping");
             }
             return null;
         }
-        for (GatewayTierMapping tierMapping : tierMappings) {
-            if (tierMapping != null && StringUtils.equalsIgnoreCase(localTierName, tierMapping.getLocalTierName())) {
-                if (StringUtils.isBlank(tierMapping.getRemotePlanReference())) {
-                    throw new APIManagementException("External tier is not configured for local tier: "
-                            + localTierName);
+        for (LocalPolicyRemoteMapping planMapping : planMappings) {
+            if (StringUtils.equals(localPolicyId, planMapping.getLocalPolicyId())) {
+                if (StringUtils.isBlank(planMapping.getRemotePlanReference())) {
+                    throw new APIManagementException("External plan is not configured for local policy: "
+                            + localPolicyId);
                 }
-                return tierMapping.getRemotePlanReference();
+                return planMapping.getRemotePlanReference();
             }
         }
-        throw new APIManagementException("No external tier mapping found for local tier: " + localTierName
+        throw new APIManagementException("No external plan mapping found for local policy: " + localPolicyId
                 + " in environment: " + environmentId);
-    }
-
-    /**
-     * Builds the opaque remote plan reference persisted by API Manager and later returned to this connector.
-     */
-    private String buildRemotePolicyReference(String policyId) {
-        com.google.gson.JsonObject policyReference = new com.google.gson.JsonObject();
-        policyReference.addProperty(USAGE_PLAN_ID, policyId);
-        return policyReference.toString();
     }
 
     /**
@@ -387,5 +362,41 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
             trimmed = trimmed.substring(0, MAX_TAG_LENGTH);
         }
         tags.put(key, trimmed);
+    }
+
+    private void loadPlanMappings(Environment environment) throws APIManagementException {
+        planMappings.clear();
+        if (environment.getAdditionalProperties() == null) {
+            return;
+        }
+        for (Map.Entry<String, String> property : environment.getAdditionalProperties().entrySet()) {
+            String key = property.getKey();
+            if (!StringUtils.startsWith(key, PLAN_MAPPING_PROPERTY_PREFIX)) {
+                continue;
+            }
+            String localPolicyId = StringUtils.removeStart(key, PLAN_MAPPING_PROPERTY_PREFIX);
+            String remotePlanReference = StringUtils.trimToNull(property.getValue());
+            if (StringUtils.isNotBlank(localPolicyId) && remotePlanReference != null) {
+                planMappings.add(new LocalPolicyRemoteMapping(localPolicyId, remotePlanReference));
+            }
+        }
+    }
+
+    private static final class LocalPolicyRemoteMapping {
+        private final String localPolicyId;
+        private final String remotePlanReference;
+
+        private LocalPolicyRemoteMapping(String localPolicyId, String remotePlanReference) {
+            this.localPolicyId = localPolicyId;
+            this.remotePlanReference = remotePlanReference;
+        }
+
+        private String getLocalPolicyId() {
+            return localPolicyId;
+        }
+
+        private String getRemotePlanReference() {
+            return remotePlanReference;
+        }
     }
 }
