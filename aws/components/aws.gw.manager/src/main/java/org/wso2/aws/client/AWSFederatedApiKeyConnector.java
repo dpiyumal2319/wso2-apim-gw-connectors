@@ -41,6 +41,8 @@ import software.amazon.awssdk.services.apigateway.model.CreateUsagePlanKeyReques
 import software.amazon.awssdk.services.apigateway.model.DeleteApiKeyRequest;
 import software.amazon.awssdk.services.apigateway.model.DeleteUsagePlanKeyRequest;
 import software.amazon.awssdk.services.apigateway.model.ConflictException;
+import software.amazon.awssdk.services.apigateway.model.GetApiKeyRequest;
+import software.amazon.awssdk.services.apigateway.model.GetApiKeyResponse;
 import software.amazon.awssdk.services.apigateway.model.NotFoundException;
 
 import java.util.ArrayList;
@@ -91,7 +93,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Initializes the AWS API Gateway client from the environment credentials and region.
      */
     @Override
-    public void init(Environment environment, String organization) throws APIManagementException {
+    public void init(Environment environment) throws APIManagementException {
         try {
             String region = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_REGION);
             String accessKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_ACCESS_KEY);
@@ -121,13 +123,7 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
         try {
             String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
-            CreateApiKeyRequest request = CreateApiKeyRequest.builder()
-                    .name(context.getApiKeyName())
-                    .value(context.getApiKeyValue())
-                    .enabled(true)
-                    .description("WSO2 API Key UUID: " + context.getApiKeyUuid())
-                    .tags(buildTags(context, awsApiId))
-                    .build();
+            CreateApiKeyRequest request = buildCreateApiKeyRequest(context, awsApiId, null);
             CreateApiKeyResponse response = apiGatewayClient.createApiKey(request);
             
             return FederatedApiKeyCreationResult.builder()
@@ -146,7 +142,19 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         if (context == null || StringUtils.isBlank(context.getApiKeyValue())) {
             throw new APIManagementException("API key value is required to replace AWS API key");
         }
-        FederatedApiKeyCreationResult result = createApiKey(context);
+        String oldApiKeyId = resolveApiKeyId(context);
+        GetApiKeyResponse oldApiKey = getExistingApiKey(oldApiKeyId);
+        String awsApiId = GatewayUtil.getAWSApiIdFromReferenceArtifact(context.getApiReferenceArtifact());
+        CreateApiKeyRequest request = buildCreateApiKeyRequest(context, awsApiId, oldApiKey);
+        CreateApiKeyResponse response;
+        try {
+            response = apiGatewayClient.createApiKey(request);
+        } catch (Exception e) {
+            throw new APIManagementException("Error creating replacement API key in AWS", e);
+        }
+        FederatedApiKeyCreationResult result = FederatedApiKeyCreationResult.builder()
+                .referenceArtifact(buildApiKeyReferenceArtifact(response.id()))
+                .build();
         if (result == null || StringUtils.isBlank(result.getReferenceArtifact())) {
             throw new APIManagementException("AWS API key replacement did not return a reference artifact");
         }
@@ -163,6 +171,62 @@ public class AWSFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
         revokeApiKey(context);
         return result;
+    }
+
+    private CreateApiKeyRequest buildCreateApiKeyRequest(FederatedApiKeyContext context, String awsApiId,
+                                                         GetApiKeyResponse oldApiKey) {
+
+        Map<String, String> tags = oldApiKey != null && oldApiKey.hasTags()
+                ? new HashMap<>(oldApiKey.tags()) : new HashMap<>();
+        tags.putAll(buildTags(context, awsApiId));
+        return CreateApiKeyRequest.builder()
+                .name(resolveApiKeyName(context, oldApiKey))
+                .value(context.getApiKeyValue())
+                .enabled(oldApiKey != null && oldApiKey.enabled() != null ? oldApiKey.enabled() : true)
+                .description(resolveApiKeyDescription(context, oldApiKey))
+                .tags(tags)
+                .build();
+    }
+
+    private GetApiKeyResponse getExistingApiKey(String apiKeyId) throws APIManagementException {
+
+        if (StringUtils.isBlank(apiKeyId)) {
+            return null;
+        }
+        try {
+            GetApiKeyRequest request = GetApiKeyRequest.builder()
+                    .apiKey(apiKeyId)
+                    .includeValue(false)
+                    .build();
+            return apiGatewayClient.getApiKey(request);
+        } catch (NotFoundException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Old AWS API key was not found for replacement: " + apiKeyId, e);
+            }
+            return null;
+        } catch (Exception e) {
+            throw new APIManagementException("Error retrieving old AWS API key for replacement", e);
+        }
+    }
+
+    private String resolveApiKeyName(FederatedApiKeyContext context, GetApiKeyResponse oldApiKey) {
+
+        if (context != null && StringUtils.isNotBlank(context.getApiKeyName())) {
+            return context.getApiKeyName();
+        }
+        if (oldApiKey != null && StringUtils.isNotBlank(oldApiKey.name())) {
+            return oldApiKey.name();
+        }
+        return context != null && StringUtils.isNotBlank(context.getApiKeyUuid())
+                ? "wso2-key-" + context.getApiKeyUuid() : "wso2-key";
+    }
+
+    private String resolveApiKeyDescription(FederatedApiKeyContext context, GetApiKeyResponse oldApiKey) {
+
+        if (oldApiKey != null && StringUtils.isNotBlank(oldApiKey.description())) {
+            return oldApiKey.description();
+        }
+        return "WSO2 API Key UUID: " + (context != null ? context.getApiKeyUuid() : "");
     }
 
     /**

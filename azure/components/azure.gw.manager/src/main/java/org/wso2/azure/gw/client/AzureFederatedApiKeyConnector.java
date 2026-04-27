@@ -56,7 +56,7 @@ public class AzureFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Initializes the Azure API Management client from the environment service-principal configuration.
      */
     @Override
-    public void init(Environment environment, String organization) throws APIManagementException {
+    public void init(Environment environment) throws APIManagementException {
         try {
             String tenantId = environment.getAdditionalProperties().get(AzureConstants.AZURE_ENVIRONMENT_TENANT_ID);
             String clientId = environment.getAdditionalProperties().get(AzureConstants.AZURE_ENVIRONMENT_CLIENT_ID);

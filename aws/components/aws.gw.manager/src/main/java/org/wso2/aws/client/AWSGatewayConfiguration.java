@@ -183,6 +183,7 @@ public class AWSGatewayConfiguration implements GatewayAgentConfiguration {
             Map<String, String> value = new LinkedHashMap<>();
             value.put("id", policy.getUUID());
             value.put("label", policy.getDisplayName() != null ? policy.getDisplayName() : policy.getPolicyName());
+            value.put("apiType", apiType);
             values.add(value);
         }
         return values;

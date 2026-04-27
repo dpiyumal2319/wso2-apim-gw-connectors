@@ -78,7 +78,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Initializes the Kong Konnect client from the environment URL, control plane ID, and access token.
      */
     @Override
-    public void init(Environment environment, String organization) throws APIManagementException {
+    public void init(Environment environment) throws APIManagementException {
         try {
             this.deploymentType = environment.getAdditionalProperties().get(KongConstants.KONG_DEPLOYMENT_TYPE);
             String adminUrl = environment.getAdditionalProperties().get(KongConstants.KONG_ADMIN_URL);
