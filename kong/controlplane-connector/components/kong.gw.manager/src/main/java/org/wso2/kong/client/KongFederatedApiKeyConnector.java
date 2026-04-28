@@ -33,7 +33,6 @@ import org.apache.http.impl.client.HttpClients;
 import org.wso2.carbon.apimgt.api.APIManagementException;
 import org.wso2.carbon.apimgt.api.FederatedApiKeyConnector;
 import org.wso2.carbon.apimgt.api.model.Environment;
-import org.wso2.carbon.apimgt.api.model.FederatedApiKeyContext;
 import org.wso2.carbon.apimgt.api.model.FederatedApiKeyCreationResult;
 import org.wso2.carbon.apimgt.impl.kmclient.ApacheFeignHttpClient;
 import org.wso2.kong.client.model.KongAcl;
@@ -46,6 +45,7 @@ import org.wso2.kong.client.model.PagedResponse;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Kong implementation of federated API key management.
@@ -67,6 +67,13 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     private static final String TAG_PERMITTED_IP = "wso2:key-permitted-ip";
     private static final String TAG_PERMITTED_REFERER = "wso2:key-permitted-referer";
     private static final String PLAN_MAPPING_PROPERTY_PREFIX = "plan_mapping.";
+    private static final String PROPERTY_API_UUID = "api.uuid";
+    private static final String PROPERTY_AUTHZ_USER = "authz.user";
+    private static final String PROPERTY_LOCAL_POLICY_ID = "local.policy.id";
+    private static final String PROPERTY_ORGANIZATION_ID = "organization.id";
+    private static final String PROPERTY_VALIDITY_PERIOD = "key.validity.period";
+    private static final String PROPERTY_PERMITTED_IP = "key.permitted.ip";
+    private static final String PROPERTY_PERMITTED_REFERER = "key.permitted.referer";
 
     private KongKonnectApi apiGatewayClient;
     private String controlPlaneId;
@@ -116,18 +123,21 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Creates a Kong consumer, key-auth credential, and API ACL group for the local API-key value.
      */
     @Override
-    public FederatedApiKeyCreationResult createApiKey(FederatedApiKeyContext context) throws APIManagementException {
-        if (context == null || StringUtils.isAnyBlank(context.getApiKeyUuid(), context.getApiKeyValue())) {
+    public FederatedApiKeyCreationResult createApiKey(String apiReferenceArtifact, String apiKeyUuid,
+                                                      String apiKeyName, String apiKeyValue,
+                                                      Map<String, String> properties)
+            throws APIManagementException {
+        if (StringUtils.isAnyBlank(apiKeyUuid, apiKeyValue)) {
             throw new APIManagementException("API key UUID and value are required");
         }
 
         String consumerId = null;
-        String consumerName = KongConstants.CONSUMER_NAME_PREFIX + context.getApiKeyUuid();
+        String consumerName = KongConstants.CONSUMER_NAME_PREFIX + apiKeyUuid;
         try {
-            String remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
-            List<String> metadataTags = buildMetadataTags(context, remoteApiId);
+            String remoteApiId = resolveRemoteApiId(apiReferenceArtifact);
+            List<String> metadataTags = buildMetadataTags(apiKeyUuid, properties, remoteApiId);
 
-            KongConsumer consumerRequest = new KongConsumer(consumerName, context.getApiKeyUuid());
+            KongConsumer consumerRequest = new KongConsumer(consumerName, apiKeyUuid);
             consumerRequest.setTags(metadataTags);
             KongConsumer consumer = apiGatewayClient.createConsumer(controlPlaneId, consumerRequest);
             if (consumer == null || StringUtils.isBlank(consumer.getId())) {
@@ -136,9 +146,10 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
             consumerId = consumer.getId();
 
             KongKeyAuth keyAuthRequest = new KongKeyAuth();
-            keyAuthRequest.setKey(context.getApiKeyValue());
-            if (context.getValidityPeriod() != null && context.getValidityPeriod() > 0) {
-                keyAuthRequest.setTtl(context.getValidityPeriod());
+            keyAuthRequest.setKey(apiKeyValue);
+            Long validityPeriod = getLongProperty(properties, PROPERTY_VALIDITY_PERIOD);
+            if (validityPeriod != null && validityPeriod > 0) {
+                keyAuthRequest.setTtl(validityPeriod);
             }
             keyAuthRequest.setTags(metadataTags);
             KongKeyAuth keyAuth = createKeyAuthWithTagFallback(consumerId, keyAuthRequest);
@@ -153,7 +164,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         } catch (KongGatewayException e) {
             if (e.getStatusCode() == HTTP_CONFLICT) {
                 throw new APIManagementException("Kong consumer already exists for key UUID: "
-                        + context.getApiKeyUuid(), e);
+                        + apiKeyUuid, e);
             }
             rollbackCreatedConsumer(consumerId, e);
             throw new APIManagementException("Error creating API key in Kong: " + e.getMessage(), e);
@@ -166,24 +177,29 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     /**
      * Replaces the key-auth credential on the existing Kong consumer and keeps consumer-level ACL/group associations.
      */
-    public FederatedApiKeyCreationResult replaceApiKey(FederatedApiKeyContext context) throws APIManagementException {
-        if (context == null || StringUtils.isBlank(context.getApiKeyValue())) {
+    @Override
+    public FederatedApiKeyCreationResult replaceApiKey(String apiReferenceArtifact, String apiKeyUuid,
+                                                       String apiKeyValue, String apiKeyReferenceArtifact,
+                                                       Map<String, String> properties)
+            throws APIManagementException {
+        if (StringUtils.isBlank(apiKeyValue)) {
             throw new APIManagementException("API key value is required to replace Kong API key");
         }
-        String consumerId = resolveConsumerId(context);
+        String consumerId = resolveConsumerId(apiKeyReferenceArtifact);
         if (StringUtils.isBlank(consumerId)) {
-            return createApiKey(context);
+            return createApiKey(apiReferenceArtifact, apiKeyUuid, null, apiKeyValue, properties);
         }
 
         List<KongKeyAuth> existingCredentials = listKeyAuthCredentials(consumerId);
         KongKeyAuth keyAuthRequest = new KongKeyAuth();
-        keyAuthRequest.setKey(context.getApiKeyValue());
-        if (context.getValidityPeriod() != null && context.getValidityPeriod() > 0) {
-            keyAuthRequest.setTtl(context.getValidityPeriod());
+        keyAuthRequest.setKey(apiKeyValue);
+        Long validityPeriod = getLongProperty(properties, PROPERTY_VALIDITY_PERIOD);
+        if (validityPeriod != null && validityPeriod > 0) {
+            keyAuthRequest.setTtl(validityPeriod);
         }
         try {
-            String remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
-            keyAuthRequest.setTags(buildMetadataTags(context, remoteApiId));
+            String remoteApiId = resolveRemoteApiId(apiReferenceArtifact);
+            keyAuthRequest.setTags(buildMetadataTags(apiKeyUuid, properties, remoteApiId));
             KongKeyAuth replacement = createKeyAuthWithTagFallback(consumerId, keyAuthRequest);
             if (replacement == null || StringUtils.isBlank(replacement.getId())) {
                 throw new APIManagementException("Failed to create replacement Kong key-auth credential");
@@ -203,8 +219,8 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Deletes the Kong consumer identified by the stored connector-owned reference artifact.
      */
     @Override
-    public void revokeApiKey(FederatedApiKeyContext context) throws APIManagementException {
-        String consumerId = resolveConsumerId(context);
+    public void revokeApiKey(String apiKeyReferenceArtifact) throws APIManagementException {
+        String consumerId = resolveConsumerId(apiKeyReferenceArtifact);
         if (StringUtils.isBlank(consumerId)) {
             return;
         }
@@ -223,12 +239,13 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Adds ACL and consumer-group associations for the mapped remote consumer group.
      */
     @Override
-    public void applyRateLimitPolicy(FederatedApiKeyContext context) throws APIManagementException {
-        String remotePolicyReference = resolveRemotePolicyReference(context, true);
+    public void applyRateLimitPolicy(String apiReferenceArtifact, String apiKeyReferenceArtifact, String localPolicyId,
+                                     Map<String, String> properties) throws APIManagementException {
+        String remotePolicyReference = resolveRemotePolicyReference(localPolicyId, properties, true);
         if (StringUtils.isBlank(remotePolicyReference)) {
             return;
         }
-        String consumerId = resolveConsumerId(context);
+        String consumerId = resolveConsumerId(apiKeyReferenceArtifact);
         if (StringUtils.isBlank(consumerId)) {
             throw new APIManagementException("Remote API key ID is required for Kong association");
         }
@@ -238,7 +255,7 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
 
         try {
-            String remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
+            String remoteApiId = resolveRemoteApiId(apiReferenceArtifact);
             if (!consumerGroupExists(policyId)) {
                 throw new APIManagementException("Mapped Kong consumer group was not found: " + policyId);
             }
@@ -257,12 +274,14 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
      * Removes ACL and consumer-group associations for the mapped remote consumer group.
      */
     @Override
-    public void removeRateLimitPolicy(FederatedApiKeyContext context) throws APIManagementException {
-        String remotePolicyReference = resolveRemotePolicyReference(context, true);
+    public void removeRateLimitPolicy(String apiReferenceArtifact, String apiKeyReferenceArtifact,
+                                      String localPolicyId, Map<String, String> properties)
+            throws APIManagementException {
+        String remotePolicyReference = resolveRemotePolicyReference(localPolicyId, properties, true);
         if (StringUtils.isBlank(remotePolicyReference)) {
             return;
         }
-        String consumerId = resolveConsumerId(context);
+        String consumerId = resolveConsumerId(apiKeyReferenceArtifact);
         if (StringUtils.isBlank(consumerId)) {
             return;
         }
@@ -272,8 +291,8 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         }
         try {
             String remoteApiId = null;
-            if (StringUtils.isNotBlank(context.getApiReferenceArtifact())) {
-                remoteApiId = resolveRemoteApiId(context.getApiReferenceArtifact());
+            if (StringUtils.isNotBlank(apiReferenceArtifact)) {
+                remoteApiId = resolveRemoteApiId(apiReferenceArtifact);
             }
             removeAclGroup(consumerId, buildPlanAclGroup(policyId));
             removeAclGroup(consumerId, buildSubscriptionAclGroup(remoteApiId, policyId));
@@ -290,12 +309,15 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         return StringUtils.trimToNull(remotePolicyReference);
     }
 
-    private String resolveRemotePolicyReference(FederatedApiKeyContext context, boolean requireLocalPolicy)
+    private String resolveRemotePolicyReference(String localPolicyId, Map<String, String> properties,
+                                                boolean requireLocalPolicy)
             throws APIManagementException {
         if (planMappings.isEmpty()) {
             return null;
         }
-        String localPolicyId = context != null ? context.getLocalPolicyId() : null;
+        if (StringUtils.isBlank(localPolicyId) && properties != null) {
+            localPolicyId = properties.get(PROPERTY_LOCAL_POLICY_ID);
+        }
         if (StringUtils.isBlank(localPolicyId)) {
             if (requireLocalPolicy) {
                 throw new APIManagementException("Local subscription policy is required for external plan mapping");
@@ -321,13 +343,12 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
         return referenceArtifact.toString();
     }
 
-    private String resolveConsumerId(FederatedApiKeyContext context) throws APIManagementException {
-        if (context == null || StringUtils.isBlank(context.getApiKeyReferenceArtifact())) {
+    private String resolveConsumerId(String apiKeyReferenceArtifact) throws APIManagementException {
+        if (StringUtils.isBlank(apiKeyReferenceArtifact)) {
             return null;
         }
         try {
-            JsonObject referenceArtifact = JsonParser.parseString(context.getApiKeyReferenceArtifact())
-                    .getAsJsonObject();
+            JsonObject referenceArtifact = JsonParser.parseString(apiKeyReferenceArtifact).getAsJsonObject();
             if (referenceArtifact.has(CONSUMER_ID) && !referenceArtifact.get(CONSUMER_ID).isJsonNull()) {
                 String consumerId = referenceArtifact.get(CONSUMER_ID).getAsString();
                 if (StringUtils.isNotBlank(consumerId)) {
@@ -654,19 +675,37 @@ public class KongFederatedApiKeyConnector implements FederatedApiKeyConnector {
     /**
      * Builds Kong metadata tags that keep enough WSO2 context on the remote consumer and credential.
      */
-    private List<String> buildMetadataTags(FederatedApiKeyContext context, String remoteApiId) {
+    private List<String> buildMetadataTags(String apiKeyUuid, Map<String, String> properties, String remoteApiId)
+            throws APIManagementException {
         List<String> tags = new ArrayList<>();
         addTag(tags, TAG_API_ID, remoteApiId);
-        addTag(tags, TAG_API_UUID, context != null ? context.getApiUuid() : null);
-        addTag(tags, TAG_KEY_UUID, context != null ? context.getApiKeyUuid() : null);
-        addTag(tags, TAG_AUTHZ_USER, context != null ? context.getAuthzUser() : null);
-        addTag(tags, TAG_ORGANIZATION, context != null ? context.getOrganizationId() : null);
-        if (context != null && context.getValidityPeriod() != null) {
-            addTag(tags, TAG_VALIDITY_PERIOD, String.valueOf(context.getValidityPeriod()));
+        addTag(tags, TAG_API_UUID, getProperty(properties, PROPERTY_API_UUID));
+        addTag(tags, TAG_KEY_UUID, apiKeyUuid);
+        addTag(tags, TAG_AUTHZ_USER, getProperty(properties, PROPERTY_AUTHZ_USER));
+        addTag(tags, TAG_ORGANIZATION, getProperty(properties, PROPERTY_ORGANIZATION_ID));
+        Long validityPeriod = getLongProperty(properties, PROPERTY_VALIDITY_PERIOD);
+        if (validityPeriod != null) {
+            addTag(tags, TAG_VALIDITY_PERIOD, String.valueOf(validityPeriod));
         }
-        addTag(tags, TAG_PERMITTED_IP, context != null ? context.getPermittedIP() : null);
-        addTag(tags, TAG_PERMITTED_REFERER, context != null ? context.getPermittedReferer() : null);
+        addTag(tags, TAG_PERMITTED_IP, getProperty(properties, PROPERTY_PERMITTED_IP));
+        addTag(tags, TAG_PERMITTED_REFERER, getProperty(properties, PROPERTY_PERMITTED_REFERER));
         return tags;
+    }
+
+    private String getProperty(Map<String, String> properties, String key) {
+        return properties != null ? properties.get(key) : null;
+    }
+
+    private Long getLongProperty(Map<String, String> properties, String key) throws APIManagementException {
+        String value = getProperty(properties, key);
+        if (StringUtils.isBlank(value)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException e) {
+            throw new APIManagementException("Invalid numeric connector property: " + key, e);
+        }
     }
 
     /**
